@@ -1,17 +1,10 @@
-use crate::phi3v::image_process::Phi3VImageProcessor;
+use crate::phi3v::{image_process::Phi3VImageProcessor, text_process::Phi3VTextProcessor};
 use anyhow::Result;
 use ndarray::{Array, Array3, ArrayView};
 use ort::{GraphOptimizationLevel, Session};
 
 pub async fn run() -> Result<()> {
-    // let _predictions = get_image_embedding().await?;
-    //
-    let model = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Disable)?
-        .with_intra_threads(4)?
-        .commit_from_file("models/phi-3-v-128k-instruct-vision.onnx")?;
-
-    let predictions = {
+    let visual_features = {
         let image_processor = Phi3VImageProcessor::new();
         let img = image::open("./models/20240923-173209.jpeg").unwrap();
         let result = image_processor.preprocess(&img)?;
@@ -25,6 +18,10 @@ pub async fn run() -> Result<()> {
             "pixel_values" => result.pixel_values,
             "image_sizes" => result.image_sizes,
         ]?;
+        let model = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Disable)?
+            .with_intra_threads(4)?
+            .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-vision.onnx")?;
         let outputs = model.run(model_inputs)?;
         let predictions_view: ArrayView<f32, _> =
             outputs["visual_features"].try_extract_tensor::<f32>()?;
@@ -40,6 +37,27 @@ pub async fn run() -> Result<()> {
         predictions
     };
 
-    println!("{:?}", predictions);
+    println!("visual_features {:?}", visual_features);
+
+    let xxx = {
+        let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json");
+        let text = "Describe the image.".to_string();
+        let (input_ids, attention_mask) = text_processor.preprocess(&text)?;
+        let model_inputs = ort::inputs![
+            "input_ids" => input_ids,
+            "attention_mask" => attention_mask,
+        ]?;
+        let model = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Disable)?
+            .with_intra_threads(4)?
+            .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
+        let outputs = model.run(model_inputs)?;
+        println!("outputs {:?}", outputs);
+        let predictions_view: ArrayView<f32, _> =
+            outputs["text_embedding"].try_extract_tensor::<f32>()?;
+        let shape = predictions_view.shape();
+        println!("text_embedding shape {:?}", shape);
+    };
+
     Ok(())
 }
