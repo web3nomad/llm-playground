@@ -12,7 +12,7 @@ pub async fn run() -> Result<()> {
         .commit_from_file("models/phi-3-v-128k-instruct-vision.onnx")?;
 
     let predictions = {
-        let image_processor = Phi3VImageProcessor::new(1);
+        let image_processor = Phi3VImageProcessor::new();
         let img = image::open("./models/20240923-173209.jpeg").unwrap();
         let result = image_processor.preprocess(&img)?;
         println!(
