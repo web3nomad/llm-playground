@@ -1,4 +1,5 @@
 use anyhow::Result;
+#[allow(unused_imports)]
 use mistralrs::{
     GGUFLoader,
     GgufModelBuilder,
@@ -11,6 +12,7 @@ use mistralrs::{
     VisionModelBuilder, //
 };
 
+#[allow(dead_code)]
 pub async fn run() -> Result<()> {
     let model = GgufModelBuilder::new(
         "./models",
@@ -32,18 +34,18 @@ pub async fn run() -> Result<()> {
     .build()
     .await?;
 
-    let model = VisionModelBuilder::new(
-        // "microsoft/Phi-3.5-vision-instruct".to_string(),
-        // "xtuner/llava-phi-3-mini-hf".to_string(),
-        "xtuner/llava-phi-3-mini-gguf".to_string(),
-        VisionLoaderType::LLaVA,
-    )
-    .with_chat_template("./models/phi3.json")
-    .with_dtype(mistralrs::ModelDType::Auto)
-    .with_isq(mistralrs::IsqType::Q4_0)
-    .with_logging()
-    .build()
-    .await?;
+    // let model = VisionModelBuilder::new(
+    //     // "microsoft/Phi-3.5-vision-instruct".to_string(),
+    //     // "xtuner/llava-phi-3-mini-hf".to_string(),
+    //     "xtuner/llava-phi-3-mini-gguf".to_string(),
+    //     VisionLoaderType::LLaVA,
+    // )
+    // .with_chat_template("./models/phi3.json")
+    // .with_dtype(mistralrs::ModelDType::Auto)
+    // .with_isq(mistralrs::IsqType::Q4_0)
+    // .with_logging()
+    // .build()
+    // .await?;
 
     let img = image::open("./models/20240923-173209.jpeg").unwrap();
     println!("image {:?} {:?}", img.width(), img.height());
