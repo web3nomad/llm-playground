@@ -1,0 +1,6 @@
+torch
+torchvision
+accelerate>=0.26.0
+optimum
+git+https://github.com/huggingface/transformers
+qwen_vl_utils
