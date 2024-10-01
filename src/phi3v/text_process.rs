@@ -3,6 +3,8 @@ use ndarray::Array2;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
+// 参考了 https://github.com/pykeio/ort/blob/main/examples/sentence-transformers/examples/semantic-similarity.rs
+
 pub struct Phi3VTextProcessor {
     tokenizer_path: String,
 }
@@ -12,6 +14,15 @@ impl Phi3VTextProcessor {
         Self {
             tokenizer_path: tokenizer_path.to_string(),
         }
+    }
+
+    pub fn decode(&self, ids: &Vec<u32>) -> Result<String> {
+        let tokenizer =
+            Tokenizer::from_file(Path::new(env!("CARGO_MANIFEST_DIR")).join(&self.tokenizer_path))
+                .unwrap();
+        let ids: Vec<u32> = ids.iter().cloned().collect();
+        let text = tokenizer.decode(&ids, true).unwrap();
+        Ok(text)
     }
 
     pub fn preprocess(&self, text: &str) -> Result<(Array2<i64>, Array2<i64>)> {
