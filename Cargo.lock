@@ -230,6 +230,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bit-set"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0700ddab506f33b20a03b13996eccd309a48e5ff77d0d95926aa0210fb4e95f1"
+dependencies = [
+ "bit-vec",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
+
+[[package]]
 name = "bit_field"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,6 +362,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-core"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e1a39b963e261c58017edf2007e5b63425ad21538aaaf51fe23d1da41703701"
+dependencies = [
+ "byteorder",
+ "gemm",
+ "half",
+ "memmap2",
+ "num-traits",
+ "num_cpus",
+ "rand",
+ "rand_distr",
+ "rayon",
+ "safetensors",
+ "thiserror",
+ "yoke",
+ "zip",
+]
+
+[[package]]
 name = "candle-metal-kernels"
 version = "0.6.1"
 source = "git+https://github.com/EricLBuehler/candle.git?rev=9c62368#9c62368211a29f5c2cf94deb811ecca7a9475c38"
@@ -362,7 +398,7 @@ name = "candle-nn"
 version = "0.6.1"
 source = "git+https://github.com/EricLBuehler/candle.git?rev=9c62368#9c62368211a29f5c2cf94deb811ecca7a9475c38"
 dependencies = [
- "candle-core",
+ "candle-core 0.6.1",
  "candle-metal-kernels",
  "half",
  "metal",
@@ -371,6 +407,40 @@ dependencies = [
  "safetensors",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "candle-nn"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "898f8d21b8bdf559a1c8635e2db8386b2134015cd3003c18c1a30a22a67daec6"
+dependencies = [
+ "candle-core 0.7.2",
+ "half",
+ "num-traits",
+ "rayon",
+ "safetensors",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "candle-transformers"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06b8a130a8ac1d1e20696d89f7a52948902e037ad0eec085fceb77021007cfee"
+dependencies = [
+ "byteorder",
+ "candle-core 0.7.2",
+ "candle-nn 0.7.2",
+ "fancy-regex",
+ "num-traits",
+ "rand",
+ "rayon",
+ "serde",
+ "serde_json",
+ "serde_plain",
+ "tracing",
 ]
 
 [[package]]
@@ -875,6 +945,17 @@ dependencies = [
  "rayon-core",
  "smallvec",
  "zune-inflate",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "531e46835a22af56d1e3b66f04844bed63158bc094a628bec1d321d9b4c44bf2"
+dependencies = [
+ "bit-set",
+ "regex-automata 0.4.7",
+ "regex-syntax 0.8.4",
 ]
 
 [[package]]
@@ -1640,6 +1721,9 @@ name = "llm-playground"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "candle-core 0.7.2",
+ "candle-nn 0.7.2",
+ "candle-transformers",
  "image",
  "mistralrs",
  "reqwest",
@@ -1839,7 +1923,7 @@ version = "0.3.0"
 source = "git+https://github.com/EricLBuehler/mistral.rs.git#776c11664f36f690937db53cd1809614e64127d4"
 dependencies = [
  "anyhow",
- "candle-core",
+ "candle-core 0.6.1",
  "either",
  "futures",
  "image",
@@ -1865,8 +1949,8 @@ dependencies = [
  "buildstructor",
  "bytemuck",
  "bytemuck_derive",
- "candle-core",
- "candle-nn",
+ "candle-core 0.6.1",
+ "candle-nn 0.6.1",
  "cfgrammar",
  "chrono",
  "clap",
@@ -1924,8 +2008,8 @@ version = "0.3.0"
 source = "git+https://github.com/EricLBuehler/mistral.rs.git#776c11664f36f690937db53cd1809614e64127d4"
 dependencies = [
  "byteorder",
- "candle-core",
- "candle-nn",
+ "candle-core 0.6.1",
+ "candle-nn 0.6.1",
  "half",
  "lazy_static",
  "paste",
@@ -1939,7 +2023,7 @@ name = "mistralrs-vision"
 version = "0.3.0"
 source = "git+https://github.com/EricLBuehler/mistral.rs.git#776c11664f36f690937db53cd1809614e64127d4"
 dependencies = [
- "candle-core",
+ "candle-core 0.6.1",
  "image",
 ]
 
