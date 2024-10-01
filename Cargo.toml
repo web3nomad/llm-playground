@@ -8,9 +8,12 @@ anyhow = "1.0.89"
 candle-core = "0.7.2"
 candle-nn = "0.7.2"
 candle-transformers = { version = "0.7.2" }
-image = "0.25.2"
+image = "0.25"
+show-image = { version = "0.14", features = ["image", "raqote"] }
 mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
     "metal",
 ] }
+ndarray = "0.16.1"
+ort = { version = "2.0.0-rc.6", features = ["fetch-models"] }
 reqwest = "0.12.7"
 tokio = { version = "1.40.0", features = ["full"] }
