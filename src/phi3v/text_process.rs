@@ -1,57 +1,54 @@
 use anyhow::Result;
 use ndarray::Array2;
 use std::path::Path;
+// use tokenizers::models::bpe::BPE;
 use tokenizers::Tokenizer;
 
 // 参考了 https://github.com/pykeio/ort/blob/main/examples/sentence-transformers/examples/semantic-similarity.rs
 
 pub struct Phi3VTextProcessor {
-    tokenizer_path: String,
+    tokenizer: Tokenizer,
 }
 
 impl Phi3VTextProcessor {
-    pub fn new(tokenizer_path: &str) -> Self {
-        Self {
-            tokenizer_path: tokenizer_path.to_string(),
-        }
+    pub fn new(tokenizer_path: &str) -> Result<Self> {
+        let tokenizer =
+            Tokenizer::from_file(Path::new(env!("CARGO_MANIFEST_DIR")).join(tokenizer_path))
+                .map_err(|e| anyhow::anyhow!("Error loading tokenizer: {:?}", e))?;
+        // let model = tokenizer.get_model();
+        // println!("tokenizer model is {:?}", model); // should be tokenizers::models::bpe::BPE
+        Ok(Self { tokenizer })
     }
 
     pub fn decode(&self, ids: &Vec<u32>) -> Result<String> {
-        let tokenizer =
-            Tokenizer::from_file(Path::new(env!("CARGO_MANIFEST_DIR")).join(&self.tokenizer_path))
-                .unwrap();
         let ids: Vec<u32> = ids.iter().cloned().collect();
-        let text = tokenizer.decode(&ids, true).unwrap();
+        let text = self.tokenizer.decode(&ids, false).unwrap();
         Ok(text)
     }
 
     pub fn preprocess(&self, text: &str) -> Result<(Array2<i64>, Array2<i64>)> {
-        let tokenizer =
-            Tokenizer::from_file(Path::new(env!("CARGO_MANIFEST_DIR")).join(&self.tokenizer_path))
-                .unwrap();
-        let inputs = vec![text.to_string()];
+        let formatted_text = self.format_chat_template(text);
+        let encoding = self
+            .tokenizer
+            .encode(formatted_text, true)
+            .map_err(|e| anyhow::anyhow!("Error encoding: {:?}", e))?;
 
-        // Encode our input strings. `encode_batch` will pad each input to be the same length.
-        let encodings = tokenizer
-            .encode_batch(inputs.clone(), false)
-            .map_err(|e| anyhow::anyhow!("Error encoding batch: {:?}", e))?;
-
-        // Get the padded length of each encoding.
-        let padded_token_length = encodings[0].len();
-
-        // Get our token IDs & mask as a flattened array.
-        let ids: Vec<i64> = encodings
+        let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        let attention_mask: Vec<i64> = encoding
+            .get_attention_mask()
             .iter()
-            .flat_map(|e| e.get_ids().iter().map(|i| *i as i64))
+            .map(|&mask| mask as i64)
             .collect();
-        let mask: Vec<i64> = encodings
-            .iter()
-            .flat_map(|e| e.get_attention_mask().iter().map(|i| *i as i64))
-            .collect();
-        let input_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
-        let attention_mask =
-            Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+
+        let input_ids = Array2::from_shape_vec((1, input_ids.len()), input_ids)?;
+        let attention_mask = Array2::from_shape_vec((1, attention_mask.len()), attention_mask)?;
 
         Ok((input_ids, attention_mask))
+    }
+
+    // 参考了 https://github.com/microsoft/onnxruntime-genai/blob/main/examples/python/phi3v.py
+    // 包含了 `<s>` token，这是 LlamaTokenizer 通常使用的 BOS token
+    fn format_chat_template(&self, text: &str) -> String {
+        format!("<s><|user|>\n{text}<|end|>\n<|assistant|>\n", text = text)
     }
 }

@@ -22,7 +22,7 @@ pub async fn run() -> Result<()> {
             "image_sizes" => result.image_sizes,
         ]?;
         let model = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Disable)?
+            // .with_optimization_level(GraphOptimizationLevel::Disable)?
             .with_intra_threads(4)?
             .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-vision.onnx")?;
         let outputs = model.run(model_inputs)?;
@@ -39,21 +39,21 @@ pub async fn run() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Failed to create Array3 from predictions"))?;
         predictions
     };
-    println!("visual_features {:?}", visual_features);
+    // println!("visual_features {:?}", visual_features);
 
-    let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json");
-    let (text_inputs_embeds, attention_mask) = {
+    let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json")?;
+    let (text_inputs_embeds, text_attention_mask) = {
         // 参考了 https://github.com/microsoft/onnxruntime-genai/blob/main/examples/python/phi3v.py
         let text = format!(
-            "<|user|>\n<|image_1|>\n{prompt}<|end|>\n<|assistant|>\n",
-            prompt = "What is shown in this image?"
+            "<|image_1|>\n{prompt}",
+            prompt = "Describe the image in detail."
         );
         let (input_ids, attention_mask) = text_processor.preprocess(&text)?;
         let model_inputs = ort::inputs![
             "input_ids" => input_ids,
         ]?;
         let model = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Disable)?
+            // .with_optimization_level(GraphOptimizationLevel::Disable)?
             .with_intra_threads(4)?
             .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
         let outputs = model.run(model_inputs)?;
@@ -71,8 +71,8 @@ pub async fn run() -> Result<()> {
         (predictions, attention_mask)
     };
 
-    println!("text_inputs_embeds {:?}", text_inputs_embeds);
-    println!("attention_mask {:?}", attention_mask);
+    // println!("text_inputs_embeds {:?}", text_inputs_embeds);
+    // println!("attention_mask {:?}", attention_mask);
 
     let logits = {
         // 确保两个数组在批次维度和嵌入维度上匹配
@@ -86,19 +86,22 @@ pub async fn run() -> Result<()> {
         )?;
 
         // 更新 attention_mask
-        let visual_attention = Array::ones((attention_mask.shape()[0], visual_features.shape()[1]));
-        let combined_attention_mask =
-            ndarray::concatenate(Axis(1), &[attention_mask.view(), visual_attention.view()])?;
+        let visual_attention =
+            Array::ones((text_attention_mask.shape()[0], visual_features.shape()[1]));
+        let combined_attention_mask = ndarray::concatenate(
+            Axis(1),
+            &[text_attention_mask.view(), visual_attention.view()],
+        )?;
 
         let mut model_inputs = ort::inputs![
             "inputs_embeds" => combined_features,
             "attention_mask" => combined_attention_mask,
             // "inputs_embeds" => text_inputs_embeds,
-            // "attention_mask" => attention_mask,
+            // "attention_mask" => text_attention_mask,
         ]?;
 
+        let num_layers = 32;
         let batch_size = 1;
-        let num_layers = 32; // This should match your model's configuration
         let num_heads = 32; // This should match your model's configuration
         let sequence_length = 0; // Start with 0 for the first run
         let head_size = 96; // This should match your model's configuration
@@ -128,11 +131,12 @@ pub async fn run() -> Result<()> {
         }
 
         let model = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Disable)?
+            // .with_optimization_level(GraphOptimizationLevel::Disable)?
             .with_intra_threads(4)?
             .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text.onnx")?;
+
         let outputs = model.run(model_inputs)?;
-        println!("outputs {:?}", outputs);
+        // println!("outputs {:?}", outputs);
         let predictions_view: ArrayView<f32, _> = outputs["logits"].try_extract_tensor::<f32>()?;
         let shape = predictions_view.shape();
         if shape.len() != 3 {
@@ -145,7 +149,7 @@ pub async fn run() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Failed to create Array3 from predictions"))?;
         predictions
     };
-    println!("logits {:?}", logits);
+    // println!("logits {:?}", logits);
 
     // 获取每个位置上概率最高的 token ID
     let predicted_token_ids: Vec<u32> = logits
@@ -162,7 +166,7 @@ pub async fn run() -> Result<()> {
 
     // 将 token ID 转换回文本
     let output_text = text_processor.decode(&predicted_token_ids)?;
-    println!("Generated text: {}", output_text);
+    println!("{}", output_text);
 
     Ok(())
 }
