@@ -2,6 +2,7 @@ use anyhow::Result;
 mod candle;
 mod mistral;
 mod ort;
+mod phi3v;
 
 #[tokio::main]
 async fn main() -> Result<()> {
