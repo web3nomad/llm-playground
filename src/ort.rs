@@ -1,7 +1,7 @@
 use crate::phi3v::{image_process::Phi3VImageProcessor, text_process::Phi3VTextProcessor};
 use anyhow::Result;
 use image::DynamicImage;
-use ndarray::{Array, Array2, Array3, Array4, ArrayView, Ix3, Ix4};
+use ndarray::{s, Array, Array2, Array3, Array4, ArrayView, Ix3, Ix4};
 use ort::{
     // GraphOptimizationLevel,
     CPUExecutionProvider,
@@ -44,26 +44,15 @@ fn get_text_embedding(input_ids: &Array2<i64>) -> Result<Array3<f32>> {
     let model_inputs = ort::inputs![
         "input_ids" => input_ids.to_owned(),
     ]?;
-
     let model = Session::builder()?
         // .with_optimization_level(GraphOptimizationLevel::Disable)?
         .with_execution_providers([CPUExecutionProvider::default().build()])?
         .with_intra_threads(4)?
         .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
-
     let outputs = model.run(model_inputs)?;
     let inputs_embeds_view: ArrayView<f32, _> =
         outputs["inputs_embeds"].try_extract_tensor::<f32>()?;
-    // println!("predictions_view: {:?}", predictions_view);
-    // {
-    //     let shape = predictions_view.shape();
-    //     for i in 0..shape[0] {
-    //         for j in 0..shape[1] {
-    //             let row = predictions_view.slice(ndarray::s![i, j, ..]);
-    //             println!("predictions[{}][{}]: {:?}", i, j, row);
-    //         }
-    //     }
-    // }
+    // println!("inputs_embeds_view: {:?}", inputs_embeds_view);
     let inputs_embeds = inputs_embeds_view.into_dimensionality::<Ix3>()?.to_owned();
     // println!("inputs_embeds {:?}", inputs_embeds);
     // let shape = inputs_embeds_view.shape();
@@ -79,13 +68,13 @@ fn get_text_embedding(input_ids: &Array2<i64>) -> Result<Array3<f32>> {
 }
 
 pub async fn run() -> Result<()> {
-    // let img: Option<DynamicImage> = Some(image::open("./models/frames/4000.jpg").unwrap()); //./models/20240923-173209.jpeg
-    let img: Option<DynamicImage> = None;
-    let _visual_features = get_image_embedding(&img)?;
-    // println!("visual_features {:?}", visual_features);
+    let img: Option<DynamicImage> = Some(image::open("./models/frames/4000.jpg").unwrap());
+    // let img: Option<DynamicImage> = None;
+    let visual_features = get_image_embedding(&img)?;
+    println!("visual_features {:?}", visual_features);
 
     let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json")?;
-    let (mut text_inputs_embeds, mut text_attention_mask) = {
+    let (mut inputs_embeds, mut attention_mask) = {
         let text = if let Some(_img) = &img {
             format!(
                 "<|image_1|>\n{prompt}",
@@ -94,11 +83,63 @@ pub async fn run() -> Result<()> {
         } else {
             format!("{prompt}", prompt = "Who are you?")
         };
+
         let (input_ids, attention_mask) = text_processor.preprocess(&text)?;
-        // println!("input_ids: {:?}", input_ids);
-        // println!("attention_mask: {:?}", attention_mask);
+        println!("input_ids: {:?}", input_ids);
+        println!("attention_mask: {:?}", attention_mask);
         let inputs_embeds = get_text_embedding(&input_ids)?;
-        (inputs_embeds, attention_mask)
+        println!("inputs_embeds: {:?}", inputs_embeds);
+
+        if let Some(_img) = &img {
+            let mut combined_embeds = Array3::zeros((
+                1,
+                inputs_embeds.shape()[1] + visual_features.shape()[1],
+                inputs_embeds.shape()[2],
+            ));
+
+            // 找到 <|image_1|> 标记的位置, 在 <|user|> (id 是 32010) 后面
+            let image_token_position = input_ids.iter().position(|&id| id == 32010).unwrap_or(0);
+
+            // 复制文本嵌入直到 <|image_1|> 标记
+            combined_embeds
+                .slice_mut(s![.., ..image_token_position, ..])
+                .assign(&inputs_embeds.slice(s![.., ..image_token_position, ..]));
+
+            // 插入视觉特征
+            combined_embeds
+                .slice_mut(s![
+                    ..,
+                    image_token_position..(image_token_position + visual_features.shape()[1]),
+                    ..
+                ])
+                .assign(&visual_features);
+
+            // 复制剩余的文本嵌入
+            combined_embeds
+                .slice_mut(s![
+                    ..,
+                    (image_token_position + visual_features.shape()[1])..,
+                    ..
+                ])
+                .assign(&inputs_embeds.slice(s![.., image_token_position.., ..]));
+
+            // 更新 attention_mask
+            let mut new_attention_mask =
+                Array2::ones((1, attention_mask.shape()[1] + visual_features.shape()[1]));
+            new_attention_mask
+                .slice_mut(s![.., ..image_token_position])
+                .assign(&attention_mask.slice(s![.., ..image_token_position]));
+            new_attention_mask
+                .slice_mut(s![
+                    ..,
+                    (image_token_position + visual_features.shape()[1])..
+                ])
+                .assign(&attention_mask.slice(s![.., image_token_position..]));
+
+            (combined_embeds, new_attention_mask)
+        } else {
+            (inputs_embeds, attention_mask)
+        }
     };
 
     // 加载文本生成模型
@@ -120,8 +161,8 @@ pub async fn run() -> Result<()> {
 
     for _ in 0..max_length {
         let mut model_inputs = ort::inputs![
-            "inputs_embeds" => text_inputs_embeds.clone(),
-            "attention_mask" => text_attention_mask.clone(),
+            "inputs_embeds" => inputs_embeds.clone(),
+            "attention_mask" => attention_mask.clone(),
         ]?;
         for i in 0..32 {
             let key: Cow<'_, str> = format!("past_key_values.{}.key", i).into();
@@ -140,7 +181,7 @@ pub async fn run() -> Result<()> {
         let logits = logits.into_dimensionality::<Ix3>()?;
 
         // 获取最后一个 token 的 logits
-        let last_token_logits = logits.slice(ndarray::s![0, -1, ..]);
+        let last_token_logits = logits.slice(s![0, -1, ..]);
         let next_token_id = last_token_logits
             .iter()
             .enumerate()
@@ -159,19 +200,19 @@ pub async fn run() -> Result<()> {
         let new_token_embed = get_text_embedding(&new_token_id)?;
         // 合并新的 token 嵌入与之前的嵌入
         let mut combined_embeds = Array3::zeros((
-            text_inputs_embeds.shape()[0],
-            text_inputs_embeds.shape()[1] + 1,
-            text_inputs_embeds.shape()[2],
+            inputs_embeds.shape()[0],
+            inputs_embeds.shape()[1] + 1,
+            inputs_embeds.shape()[2],
         ));
         combined_embeds
-            .slice_mut(ndarray::s![.., ..text_inputs_embeds.shape()[1], ..])
-            .assign(&text_inputs_embeds);
+            .slice_mut(s![.., ..inputs_embeds.shape()[1], ..])
+            .assign(&inputs_embeds);
         combined_embeds
-            .slice_mut(ndarray::s![.., text_inputs_embeds.shape()[1].., ..])
+            .slice_mut(s![.., inputs_embeds.shape()[1].., ..])
             .assign(&new_token_embed);
 
-        text_inputs_embeds = combined_embeds;
-        text_attention_mask = Array2::ones((1, text_attention_mask.shape()[1] + 1));
+        inputs_embeds = combined_embeds;
+        attention_mask = Array2::ones((1, attention_mask.shape()[1] + 1));
 
         // 更新 past_key_values
         for i in 0..32 {
@@ -190,11 +231,6 @@ pub async fn run() -> Result<()> {
             text_processor.decode(&generated_tokens.iter().map(|&id| id as u32).collect())?;
         println!("Generated text: {}", generated_text);
     }
-
-    // // 解码生成的 tokens
-    // let generated_text =
-    //     text_processor.decode(&generated_tokens.iter().map(|&id| id as u32).collect())?;
-    // println!("Generated text: {}", generated_text);
 
     Ok(())
 }
