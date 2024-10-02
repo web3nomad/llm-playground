@@ -1,0 +1,5 @@
+onnxruntime-genai
+pyreadline3
+torch
+torchvision
+transformers
