@@ -4,7 +4,7 @@ use ndarray::{s, Array2, Array4, Array5, Axis};
 
 // see https://huggingface.co/microsoft/Phi-3-vision-128k-instruct-onnx-cpu/blob/main/cpu-int4-rtn-block-32-acc-level-4/processor_config.json
 pub const NUM_CROPS: usize = 1; // 16 太慢了
-pub const NUM_IMG_TOKENS: usize = 144;
+pub const _NUM_IMG_TOKENS: usize = 144;
 
 const OPENAI_CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
 const OPENAI_CLIP_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
