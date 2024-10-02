@@ -2,15 +2,15 @@ use crate::phi3v::{image_process::Phi3VImageProcessor, text_process::Phi3VTextPr
 use anyhow::Result;
 use image::DynamicImage;
 use ndarray::{s, Array, Array2, Array3, Array4, ArrayView, Ix3, Ix4};
-use ort::{
-    // CPUExecutionProvider,
-    // CoreMLExecutionProvider,
-    // GraphOptimizationLevel,
-    Session,
-    SessionInputValue,
-    Tensor,
-};
+use ort::{Session, SessionInputValue, Tensor};
 use std::borrow::Cow;
+use std::io::{stdout, Write};
+use std::time::Instant;
+
+#[allow(dead_code)]
+fn get_current_time() -> Instant {
+    Instant::now()
+}
 
 fn get_image_embedding(model: &Session, img: &Option<DynamicImage>) -> Result<Array3<f32>> {
     let visual_features = if let Some(img) = img {
@@ -62,25 +62,35 @@ fn get_text_embedding(model: &Session, input_ids: &Array2<i64>) -> Result<Array3
 pub async fn run() -> Result<()> {
     let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json")?;
     let text_embedding_model = Session::builder()?
-        // .with_optimization_level(GraphOptimizationLevel::Level3)?
-        // .with_execution_providers([CoreMLExecutionProvider::default().build()])?
-        // .with_intra_threads(16)?
-        // .with_inter_threads(16)?
+        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+        .with_execution_providers([ort::CoreMLExecutionProvider::default()
+            .with_subgraphs()
+            .with_ane_only()
+            .build()])?
+        // .with_intra_threads(8)?
+        // .with_inter_threads(2)?
         .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
     let vision_model = Session::builder()?
-        // .with_optimization_level(GraphOptimizationLevel::Level3)?
-        // .with_execution_providers([CoreMLExecutionProvider::default().build()])?
-        // .with_intra_threads(16)?
-        // .with_inter_threads(16)?
+        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+        .with_execution_providers([ort::CoreMLExecutionProvider::default()
+            .with_subgraphs()
+            .with_ane_only()
+            .build()])?
+        // .with_intra_threads(8)?
+        // .with_inter_threads(2)?
         .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-vision.onnx")?;
     let generation_model = Session::builder()?
-        // .with_optimization_level(GraphOptimizationLevel::Level3)?
-        // .with_execution_providers([CoreMLExecutionProvider::default().build()])?
-        // .with_intra_threads(16)?
-        // .with_inter_threads(16)?
+        .with_optimization_level(ort::GraphOptimizationLevel::Level3)?
+        .with_execution_providers([ort::CoreMLExecutionProvider::default()
+            .with_subgraphs()
+            .with_ane_only()
+            .build()])?
+        // .with_intra_threads(8)?
+        // .with_inter_threads(2)?
         .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text.onnx")?;
 
-    let img: Option<DynamicImage> = Some(image::open("./models/frames/4000.jpg").unwrap());
+    // let img: Option<DynamicImage> = Some(image::open("./models/frames/4000.jpg").unwrap());
+    let img: Option<DynamicImage> = Some(image::open("./models/20240923-173209.jpeg").unwrap());
     // let img: Option<DynamicImage> = None;
     let visual_features = get_image_embedding(&vision_model, &img)?;
     println!("visual_features {:?}", visual_features);
@@ -156,6 +166,7 @@ pub async fn run() -> Result<()> {
     let mut generated_tokens = Vec::new();
     let max_length = 100; // 设置最大生成长度
     let eos_token_id = 32007; // 根据模型配置设置
+    let vocab_size = 32064; // 根据模型配置设置
 
     // let batch_size = 1;
     // let num_heads = 32; // This should match your model's configuration
@@ -163,7 +174,7 @@ pub async fn run() -> Result<()> {
     // let head_size = 96; // This should match your model's configuration
     // 32 layers, each with a key and value
     let mut past_key_values: Vec<Array4<f32>> = vec![Array4::zeros((1, 32, 0, 96)); 64];
-
+    print!("Generated text: ");
     for _ in 0..max_length {
         let mut model_inputs = ort::inputs![
             "inputs_embeds" => inputs_embeds.clone(),
@@ -180,13 +191,16 @@ pub async fn run() -> Result<()> {
             model_inputs.push((key, val));
         }
 
+        // let start_time = get_current_time();
         let outputs = generation_model.run(model_inputs)?;
+        // let end_time = get_current_time();
+        // println!("Time taken to run model: {:?}", end_time - start_time);
 
         let logits: ArrayView<f32, _> = outputs["logits"].try_extract_tensor::<f32>()?;
         let logits = logits.into_dimensionality::<Ix3>()?;
 
         // 获取最后一个 token 的 logits
-        let last_token_logits = logits.slice(s![0, -1, ..]);
+        let last_token_logits = logits.slice(s![0, -1, ..vocab_size]);
         let next_token_id = last_token_logits
             .iter()
             .enumerate()
@@ -195,6 +209,14 @@ pub async fn run() -> Result<()> {
             .0 as i64;
 
         generated_tokens.push(next_token_id);
+
+        {
+            // Decode and print the last token
+            let last_token =
+                text_processor.decode(&vec![generated_tokens.last().unwrap().clone() as u32])?;
+            print!("{} ", last_token);
+            stdout().flush().unwrap();
+        }
 
         if next_token_id == eos_token_id {
             break;
@@ -230,12 +252,13 @@ pub async fn run() -> Result<()> {
                 .into_dimensionality::<Ix4>()?
                 .to_owned();
         }
-
-        // 解码生成的 tokens
-        let generated_text =
-            text_processor.decode(&generated_tokens.iter().map(|&id| id as u32).collect())?;
-        println!("Generated text: {}", generated_text);
     }
+
+    println!("");
+    // 解码生成的 tokens
+    let generated_text =
+        text_processor.decode(&generated_tokens.iter().map(|&id| id as u32).collect())?;
+    println!("Generated text: {}", generated_text);
 
     Ok(())
 }
