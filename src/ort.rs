@@ -3,15 +3,16 @@ use anyhow::Result;
 use image::DynamicImage;
 use ndarray::{s, Array, Array2, Array3, Array4, ArrayView, Ix3, Ix4};
 use ort::{
+    // CPUExecutionProvider,
+    // CoreMLExecutionProvider,
     // GraphOptimizationLevel,
-    CPUExecutionProvider,
     Session,
     SessionInputValue,
     Tensor,
 };
 use std::borrow::Cow;
 
-fn get_image_embedding(img: &Option<DynamicImage>) -> Result<Array3<f32>> {
+fn get_image_embedding(model: &Session, img: &Option<DynamicImage>) -> Result<Array3<f32>> {
     let visual_features = if let Some(img) = img {
         let image_processor = Phi3VImageProcessor::new();
         let result = image_processor.preprocess(img)?;
@@ -25,10 +26,6 @@ fn get_image_embedding(img: &Option<DynamicImage>) -> Result<Array3<f32>> {
             "pixel_values" => result.pixel_values,
             "image_sizes" => result.image_sizes,
         ]?;
-        let model = Session::builder()?
-            // .with_optimization_level(GraphOptimizationLevel::Disable)?
-            .with_intra_threads(4)?
-            .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-vision.onnx")?;
         let outputs = model.run(model_inputs)?;
         let predictions_view: ArrayView<f32, _> =
             outputs["visual_features"].try_extract_tensor::<f32>()?;
@@ -40,15 +37,10 @@ fn get_image_embedding(img: &Option<DynamicImage>) -> Result<Array3<f32>> {
     Ok(visual_features)
 }
 
-fn get_text_embedding(input_ids: &Array2<i64>) -> Result<Array3<f32>> {
+fn get_text_embedding(model: &Session, input_ids: &Array2<i64>) -> Result<Array3<f32>> {
     let model_inputs = ort::inputs![
         "input_ids" => input_ids.to_owned(),
     ]?;
-    let model = Session::builder()?
-        // .with_optimization_level(GraphOptimizationLevel::Disable)?
-        .with_execution_providers([CPUExecutionProvider::default().build()])?
-        .with_intra_threads(4)?
-        .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
     let outputs = model.run(model_inputs)?;
     let inputs_embeds_view: ArrayView<f32, _> =
         outputs["inputs_embeds"].try_extract_tensor::<f32>()?;
@@ -68,12 +60,31 @@ fn get_text_embedding(input_ids: &Array2<i64>) -> Result<Array3<f32>> {
 }
 
 pub async fn run() -> Result<()> {
+    let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json")?;
+    let text_embedding_model = Session::builder()?
+        // .with_optimization_level(GraphOptimizationLevel::Level3)?
+        // .with_execution_providers([CoreMLExecutionProvider::default().build()])?
+        // .with_intra_threads(16)?
+        // .with_inter_threads(16)?
+        .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
+    let vision_model = Session::builder()?
+        // .with_optimization_level(GraphOptimizationLevel::Level3)?
+        // .with_execution_providers([CoreMLExecutionProvider::default().build()])?
+        // .with_intra_threads(16)?
+        // .with_inter_threads(16)?
+        .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-vision.onnx")?;
+    let generation_model = Session::builder()?
+        // .with_optimization_level(GraphOptimizationLevel::Level3)?
+        // .with_execution_providers([CoreMLExecutionProvider::default().build()])?
+        // .with_intra_threads(16)?
+        // .with_inter_threads(16)?
+        .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text.onnx")?;
+
     let img: Option<DynamicImage> = Some(image::open("./models/frames/4000.jpg").unwrap());
     // let img: Option<DynamicImage> = None;
-    let visual_features = get_image_embedding(&img)?;
+    let visual_features = get_image_embedding(&vision_model, &img)?;
     println!("visual_features {:?}", visual_features);
 
-    let text_processor = Phi3VTextProcessor::new("models/phi-3-vision/tokenizer.json")?;
     let (mut inputs_embeds, mut attention_mask) = {
         let text = if let Some(_img) = &img {
             format!(
@@ -87,7 +98,7 @@ pub async fn run() -> Result<()> {
         let (input_ids, attention_mask) = text_processor.preprocess(&text)?;
         println!("input_ids: {:?}", input_ids);
         println!("attention_mask: {:?}", attention_mask);
-        let inputs_embeds = get_text_embedding(&input_ids)?;
+        let inputs_embeds = get_text_embedding(&text_embedding_model, &input_ids)?;
         println!("inputs_embeds: {:?}", inputs_embeds);
 
         if let Some(_img) = &img {
@@ -142,12 +153,6 @@ pub async fn run() -> Result<()> {
         }
     };
 
-    // 加载文本生成模型
-    let model = Session::builder()?
-        .with_execution_providers([CPUExecutionProvider::default().build()])?
-        .with_intra_threads(4)?
-        .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text.onnx")?;
-
     let mut generated_tokens = Vec::new();
     let max_length = 100; // 设置最大生成长度
     let eos_token_id = 32007; // 根据模型配置设置
@@ -175,7 +180,7 @@ pub async fn run() -> Result<()> {
             model_inputs.push((key, val));
         }
 
-        let outputs = model.run(model_inputs)?;
+        let outputs = generation_model.run(model_inputs)?;
 
         let logits: ArrayView<f32, _> = outputs["logits"].try_extract_tensor::<f32>()?;
         let logits = logits.into_dimensionality::<Ix3>()?;
@@ -197,7 +202,7 @@ pub async fn run() -> Result<()> {
 
         // 更新 inputs_embeds 和 attention_mask
         let new_token_id = Array2::from_elem((1, 1), next_token_id);
-        let new_token_embed = get_text_embedding(&new_token_id)?;
+        let new_token_embed = get_text_embedding(&text_embedding_model, &new_token_id)?;
         // 合并新的 token 嵌入与之前的嵌入
         let mut combined_embeds = Array3::zeros((
             inputs_embeds.shape()[0],
