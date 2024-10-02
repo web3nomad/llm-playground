@@ -1,14 +1,14 @@
-use std::borrow::Cow;
-
 use crate::phi3v::{image_process::Phi3VImageProcessor, text_process::Phi3VTextProcessor};
 use anyhow::Result;
-use ndarray::{Array, ArrayView, Axis, Ix3};
+use ndarray::{Array, Array4, ArrayView, Axis, Ix3};
 use ort::{
     // GraphOptimizationLevel,
+    CPUExecutionProvider,
     Session,
     SessionInputValue,
     Tensor,
 };
+use std::borrow::Cow;
 
 pub async fn run() -> Result<()> {
     #[allow(unused_assignments)]
@@ -58,14 +58,17 @@ pub async fn run() -> Result<()> {
         let model_inputs = ort::inputs![
             "input_ids" => input_ids,
         ]?;
+
         let model = Session::builder()?
             // .with_optimization_level(GraphOptimizationLevel::Disable)?
+            .with_execution_providers([CPUExecutionProvider::default().build()])?
             .with_intra_threads(4)?
             .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text-embedding.onnx")?;
+
         let outputs = model.run(model_inputs)?;
         let predictions_view: ArrayView<f32, _> =
             outputs["inputs_embeds"].try_extract_tensor::<f32>()?;
-        // println!("predictions_view: {:?}", predictions_view);
+        println!("predictions_view: {:?}", predictions_view);
         // {
         //     let shape = predictions_view.shape();
         //     for i in 0..shape[0] {
@@ -113,56 +116,43 @@ pub async fn run() -> Result<()> {
             (text_inputs_embeds, text_attention_mask)
         };
 
-        let mut model_inputs = ort::inputs![
-            "inputs_embeds" => combined_features,
-            "attention_mask" => combined_attention_mask,
-        ]?;
-
-        let num_layers = 32;
-        let batch_size = 1;
-        let num_heads = 32; // This should match your model's configuration
-        let sequence_length = 0; // Start with 0 for the first run
-        let head_size = 96; // This should match your model's configuration
-
-        // Create empty past key and value tensors
-        let past_key_shape = vec![batch_size, num_heads, sequence_length, head_size];
-        let past_value_shape = past_key_shape.clone();
-        println!("past_key_shape: {:?}", past_key_shape);
-        println!("past_value_shape: {:?}", past_value_shape);
-
-        let empty_past_state = vec![0.0f32; past_key_shape.iter().product()];
-        println!("empty_past_state: {:?}", empty_past_state);
-        // Add past key-value pairs for each layer
-        for i in 0..num_layers {
-            let past_key_tensor = Tensor::from_array(Array::from_shape_vec(
-                past_key_shape.clone(),
-                empty_past_state.clone(),
-            )?)?;
-            let past_value_tensor = Tensor::from_array(Array::from_shape_vec(
-                past_value_shape.clone(),
-                empty_past_state.clone(),
-            )?)?;
-            // {
-            //     let v = &past_key_tensor.try_extract_tensor::<f32>();
-            //     println!("past_key_tensor[{}]: {:?}", i, v);
-            //     let v = &past_value_tensor.try_extract_tensor::<f32>();
-            //     println!("past_value_shape[{}]: {:?}", i, v);
-            // }
-            let key: Cow<'_, str> = format!("past_key_values.{}.key", i).into();
-            let val: SessionInputValue<'_> = past_key_tensor.into();
-            model_inputs.push((key, val));
-            let key: Cow<'_, str> = format!("past_key_values.{}.value", i).into();
-            let val: SessionInputValue<'_> = past_value_tensor.into();
-            model_inputs.push((key, val));
-        }
+        let model_inputs = {
+            let mut model_inputs = ort::inputs![
+                "inputs_embeds" => combined_features,
+                "attention_mask" => combined_attention_mask,
+            ]?;
+            // let batch_size = 1;
+            // let num_heads = 32; // This should match your model's configuration
+            // let sequence_length = 0; // Start with 0 for the first run
+            // let head_size = 96; // This should match your model's configuration
+            let shape = [1, 32, 13, 96];
+            let num_layers = 32;
+            for i in 0..num_layers {
+                let past_key_tensor = Tensor::from_array(Array4::<f32>::zeros(shape))?;
+                let past_value_tensor = Tensor::from_array(Array4::<f32>::zeros(shape))?;
+                // {
+                //     let v = &past_key_tensor.try_extract_tensor::<f32>();
+                //     println!("past_key_tensor[{}]: {:?}", i, v);
+                //     let v = &past_value_tensor.try_extract_tensor::<f32>();
+                //     println!("past_value_shape[{}]: {:?}", i, v);
+                // }
+                let key: Cow<'_, str> = format!("past_key_values.{}.key", i).into();
+                let val: SessionInputValue<'_> = past_key_tensor.into();
+                model_inputs.push((key, val));
+                let key: Cow<'_, str> = format!("past_key_values.{}.value", i).into();
+                let val: SessionInputValue<'_> = past_value_tensor.into();
+                model_inputs.push((key, val));
+            }
+            model_inputs
+        };
 
         let model = Session::builder()?
             // .with_optimization_level(GraphOptimizationLevel::Disable)?
+            .with_execution_providers([CPUExecutionProvider::default().build()])?
             .with_intra_threads(4)?
             .commit_from_file("models/phi-3-vision/phi-3-v-128k-instruct-text.onnx")?;
 
         let outputs = model.run(model_inputs)?;
-        // println!("outputs {:?}", outputs);
         let predictions_view: ArrayView<f32, _> = outputs["logits"].try_extract_tensor::<f32>()?;
         let predictions = predictions_view.into_dimensionality::<Ix3>()?.to_owned();
         predictions
