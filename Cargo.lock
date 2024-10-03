@@ -2145,6 +2145,8 @@ dependencies = [
  "show-image",
  "tokenizers 0.20.0",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

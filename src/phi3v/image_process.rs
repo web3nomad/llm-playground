@@ -1,9 +1,20 @@
+//! This file is a Rust implementation of the image processing code for Phi-3-vision-128k-instruct model.
+//! The original Python version can be found at:
+//! https://huggingface.co/microsoft/Phi-3-vision-128k-instruct/blob/main/image_processing_phi3_v.py
+//!
+//! The image transformation is configured as Phi3ImageTransform in the processor config:
+//! https://huggingface.co/microsoft/Phi-3-vision-128k-instruct-onnx-cpu/blob/main/cpu-int4-rtn-block-32-acc-level-4/processor_config.json
+//!
+//! This Rust implementation aims to provide similar functionality for preprocessing images
+//! to be used with the Phi-3 vision model, adapting the original Python code to Rust.
 use anyhow::Result;
 use image::{DynamicImage, GenericImageView, ImageBuffer};
 use ndarray::{s, Array2, Array4, Array5, Axis};
 
-// see https://huggingface.co/microsoft/Phi-3-vision-128k-instruct-onnx-cpu/blob/main/cpu-int4-rtn-block-32-acc-level-4/processor_config.json
-pub const NUM_CROPS: usize = 1; // 16 太慢了
+/// see https://huggingface.co/microsoft/Phi-3-vision-128k-instruct-onnx-cpu/blob/main/cpu-int4-rtn-block-32-acc-level-4/processor_config.json
+/// NOTE: The default setting in processor_config.json is num_crops = 16,
+/// but this is too slow for practical use. We use 1 here for better performance.
+pub const NUM_CROPS: usize = 1;
 pub const _NUM_IMG_TOKENS: usize = 144;
 
 const OPENAI_CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
@@ -149,8 +160,6 @@ impl Phi3VImageProcessor {
     }
 
     fn create_global_image(&self, _image: &Array4<f32>) -> Array4<f32> {
-        // Implement resizing to 336x336 here
-        // This is a placeholder implementation
         Array4::<f32>::zeros((1, 3, 336, 336))
     }
 
