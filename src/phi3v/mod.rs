@@ -16,7 +16,6 @@ const EOS_TOKEN_ID: i64 = 32007; // <|end|>
 const USER_TOKEN_ID: i64 = 32010; // <|user|>
 const VOCAB_SIZE: usize = 32064;
 
-#[allow(dead_code)]
 fn get_current_time() -> Instant {
     Instant::now()
 }

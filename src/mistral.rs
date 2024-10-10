@@ -12,7 +12,6 @@ use mistralrs::{
     VisionModelBuilder, //
 };
 
-#[allow(dead_code)]
 pub async fn run() -> Result<()> {
     let model = GgufModelBuilder::new(
         "./models",
@@ -37,12 +36,15 @@ pub async fn run() -> Result<()> {
     // let model = VisionModelBuilder::new(
     //     // "microsoft/Phi-3.5-vision-instruct".to_string(),
     //     // "xtuner/llava-phi-3-mini-hf".to_string(),
-    //     "xtuner/llava-phi-3-mini-gguf".to_string(),
-    //     VisionLoaderType::LLaVA,
+    //     // "xtuner/llava-phi-3-mini-gguf".to_string(),
+    //     // "mlx-community/llava-phi-3-mini-4bit".to_string(),
+    //     "dwb2023/phi-3-vision-128k-instruct-quantized".to_string(),
+    //     VisionLoaderType::Phi3V,
     // )
-    // .with_chat_template("./models/phi3.json")
-    // .with_dtype(mistralrs::ModelDType::Auto)
-    // .with_isq(mistralrs::IsqType::Q4_0)
+    // .with_tokenizer_json("./models/phi-3-vision/tokenizer.json")
+    // .with_chat_template("./models/phi-3-vision/tokenizer_config.json")
+    // // .with_dtype(mistralrs::ModelDType::Auto)
+    // // .with_isq(mistralrs::IsqType::Q4_0)
     // .with_logging()
     // .build()
     // .await?;
@@ -54,8 +56,6 @@ pub async fn run() -> Result<()> {
         "Describe the image.",
         img,
     );
-
-    // model.re_isq_model(mistralrs::IsqType::Q4_0).await?;
 
     let response = match model.send_chat_request(messages).await {
         Ok(response) => response,

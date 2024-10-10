@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.89"
-candle-core = "0.7.2"
-candle-nn = "0.7.2"
+candle-core = { version = "0.7.2" }
+candle-nn = { version = "0.7.2" }
 candle-transformers = { version = "0.7.2" }
 image = "0.25"
 show-image = { version = "0.14", features = ["image", "raqote"] }
@@ -29,3 +29,4 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "fmt",
 ] }
 tracing = "0.1"
+base64 = "0.22.1"

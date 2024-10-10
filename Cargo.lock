@@ -2132,6 +2132,7 @@ name = "llm-playground"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "candle-core 0.7.2",
  "candle-nn 0.7.2",
  "candle-transformers",
