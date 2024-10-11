@@ -10,9 +10,10 @@ candle-nn = { version = "0.7.2" }
 candle-transformers = { version = "0.7.2" }
 image = "0.25"
 show-image = { version = "0.14", features = ["image", "raqote"] }
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
-    "metal",
-] }
+# mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
+#     "metal",
+# ] }
+mistralrs = { path = "../mistral.rs/mistralrs", features = ["metal"] }
 ndarray = "0.16.1"
 ort = { version = "2.0.0-rc.5", features = [
     "fetch-models",
@@ -30,3 +31,5 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 ] }
 tracing = "0.1"
 base64 = "0.22.1"
+either = "1.13.0"
+indexmap = "2.6.0"
