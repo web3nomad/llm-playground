@@ -5,10 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.89"
-candle-core = { version = "0.7.2", features = ["metal"] }
-candle-nn = { version = "0.7.2", features = ["metal"] }
-candle-transformers = { version = "0.7.2" }
-candle-examples = { version = "0.7.2" }
+# candle-core = { version = "0.7.2", features = ["metal"] }
+# candle-nn = { version = "0.7.2", features = ["metal"] }
+# candle-transformers = { version = "0.7.2" }
+# candle-examples = { version = "0.7.2" }
+candle-core = { path = "../candle/candle-core", features = ["metal"] }
+candle-nn = { path = "../candle/candle-nn", features = ["metal"] }
+candle-transformers = { path = "../candle/candle-transformers" }
+candle-examples = { path = "../candle/candle-examples" }
 image = "0.25"
 show-image = { version = "0.14", features = ["image", "raqote"] }
 # mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
@@ -37,3 +41,4 @@ base64 = "0.22.1"
 either = "1.13.0"
 indexmap = "2.6.0"
 clap = "4.5.20"
+hf-hub = "0.3.2"

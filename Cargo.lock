@@ -466,11 +466,9 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e1a39b963e261c58017edf2007e5b63425ad21538aaaf51fe23d1da41703701"
 dependencies = [
  "byteorder",
- "candle-metal-kernels 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "candle-metal-kernels 0.7.2",
  "gemm",
  "half",
  "memmap2 0.9.5",
@@ -511,12 +509,10 @@ dependencies = [
 [[package]]
 name = "candle-examples"
 version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b72ca3a7576996e90fe99b9915fd9e223844b4fa2f8dc04397165d7e954d712"
 dependencies = [
  "anyhow",
- "candle-core 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "candle-nn 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "candle-core 0.7.2",
+ "candle-nn 0.7.2",
  "candle-transformers",
  "csv",
  "hf-hub",
@@ -532,8 +528,6 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "166a92826d615d98b205e346e52128fa0439f2ab3302587403fdc558b4219e19"
 dependencies = [
  "metal 0.27.0",
  "once_cell",
@@ -555,11 +549,9 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "898f8d21b8bdf559a1c8635e2db8386b2134015cd3003c18c1a30a22a67daec6"
 dependencies = [
- "candle-core 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "candle-metal-kernels 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "candle-core 0.7.2",
+ "candle-metal-kernels 0.7.2",
  "half",
  "metal 0.27.0",
  "num-traits",
@@ -588,12 +580,10 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06b8a130a8ac1d1e20696d89f7a52948902e037ad0eec085fceb77021007cfee"
 dependencies = [
  "byteorder",
- "candle-core 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "candle-nn 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "candle-core 0.7.2",
+ "candle-nn 0.7.2",
  "fancy-regex",
  "num-traits",
  "rand",
@@ -2273,12 +2263,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "candle-core 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "candle-core 0.7.2",
  "candle-examples",
- "candle-nn 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "candle-nn 0.7.2",
  "candle-transformers",
  "clap",
  "either",
+ "hf-hub",
  "image",
  "indexmap 2.6.0",
  "mistralrs",

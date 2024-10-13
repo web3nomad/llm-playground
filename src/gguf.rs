@@ -1,12 +1,12 @@
+use candle_core::{quantized::gguf_file, DType, Device, Tensor};
+use candle_examples::token_output_stream::TokenOutputStream;
+use candle_nn::VarBuilder;
+use candle_transformers::{
+    generation::{LogitsProcessor, Sampling},
+    models::{clip, quantized_llama},
+};
 use std::io::Write;
 use tokenizers::Tokenizer;
-
-use candle_core::quantized::gguf_file;
-use candle_core::{Device, Tensor};
-use candle_examples::token_output_stream::TokenOutputStream;
-use candle_transformers::generation::{LogitsProcessor, Sampling};
-use candle_transformers::models::quantized_llama as model;
-use model::ModelWeights;
 
 #[derive(Debug)]
 enum Prompt {
@@ -27,11 +27,87 @@ fn format_size(size_in_bytes: usize) -> String {
     }
 }
 
+fn load_image<T: AsRef<std::path::Path>>(path: T, image_size: usize) -> anyhow::Result<Tensor> {
+    let img = image::ImageReader::open(path)?.decode()?;
+    let (height, width) = (image_size, image_size);
+    let img = img.resize_to_fill(
+        width as u32,
+        height as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let img = img.to_rgb8();
+    let img = img.into_raw();
+    let img = Tensor::from_vec(img, (height, width, 3), &Device::Cpu)?
+        .permute((2, 0, 1))?
+        .to_dtype(DType::F32)?
+        .affine(2. / 255., -1.)?;
+    Ok(img)
+}
+
+fn load_images<T: AsRef<std::path::Path>>(
+    paths: &Vec<T>,
+    image_size: usize,
+) -> anyhow::Result<Tensor> {
+    let mut images = vec![];
+    for path in paths {
+        let tensor = load_image(path, image_size)?;
+        images.push(tensor);
+    }
+    let images = Tensor::stack(&images, 0)?;
+    Ok(images)
+}
+
 pub async fn run() -> anyhow::Result<()> {
+    let device = Device::new_metal(0)?;
+
+    let image_path = "./models/20240923-173209.jpeg";
+    // use crate::phi3v::image_process::Phi3VImageProcessor;
+    // use image::DynamicImage;
+    // let img: DynamicImage = image::open(image_path).unwrap();
+    // let image_processor = Phi3VImageProcessor::new();
+    // let result = image_processor.preprocess(&img)?;
+    // let pixel_values = result.pixel_values;
+    // println!("pixel_values {:?}", pixel_values);
+
+    let vision_features = {
+        let model_file = {
+            let api = hf_hub::api::sync::Api::new()?;
+
+            let api = api.repo(hf_hub::Repo::with_revision(
+                "openai/clip-vit-base-patch32".to_string(),
+                hf_hub::RepoType::Model,
+                "refs/pr/15".to_string(),
+            ));
+
+            api.get("model.safetensors")?
+        };
+        let config = clip::ClipConfig::vit_base_patch32();
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[model_file.clone()], DType::F32, &device)?
+        };
+        let clip_model = clip::ClipModel::new(vb, &config)?;
+        let images = load_images(&vec![image_path], config.image_size)?.to_device(&device)?;
+        // let flat_values: Vec<f32> = pixel_values.iter().cloned().collect();
+        // let shape: candle_core::Shape = pixel_values.shape().into();
+        // // Create a new Tensor
+        // let pixel_values_tensor = Tensor::new(flat_values, &device)?.reshape(shape)?;
+        let vision_features = clip_model.get_image_features(&images)?;
+        vision_features
+    };
+    println!("vision_features {:?}", vision_features);
+
+    let vision_input = {
+        let vision_features = vision_features.reshape((1, 512))?;
+        // Quantize to F16
+        let quantized_features = vision_features.to_dtype(DType::F32)?;
+        let vision_input = quantized_features.unsqueeze(0)?; // 添加批次维度
+                                                             // let features_vec = quantized_features.flatten_all()?.to_vec1::<f32>()?;
+        vision_input
+    };
+
     let model_path = std::path::PathBuf::from("models/llava-phi-3/llava-phi-3-mini-int4.gguf");
     let mut file = std::fs::File::open(&model_path)?;
     let start = std::time::Instant::now();
-    let device = Device::new_metal(0)?;
 
     let mut model = {
         let model = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
@@ -47,16 +123,19 @@ pub async fn run() -> anyhow::Result<()> {
             &format_size(total_size_in_bytes),
             start.elapsed().as_secs_f32(),
         );
-        ModelWeights::from_gguf(model, &mut file, &device)?
+        quantized_llama::ModelWeights::from_gguf(model, &mut file, &device)?
     };
     println!("model built");
 
     let tokenizer =
         Tokenizer::from_file("models/llava-phi-3/tokenizer.json").map_err(anyhow::Error::msg)?;
     let mut tos = TokenOutputStream::new(tokenizer);
-    let prompt = "hello";
+    let prompt = "describe this image";
 
-    let prompt_str = format!("<|system|>\n</end>\n<|user|>\n{prompt}</end>\n<|assistant|>",);
+    let prompt_str = format!(
+        "<|system|>\n</end>\n<|user|>\n<image>\n{text_msg}\n</end>\n<|assistant|>",
+        text_msg = prompt,
+    );
     println!("{}", &prompt_str);
     let tokens = tos
         .tokenizer()
@@ -65,13 +144,13 @@ pub async fn run() -> anyhow::Result<()> {
 
     let prompt_tokens = tokens.get_ids().to_vec();
     let to_sample = 1000; // TODO: make this a parameter
-    let prompt_tokens = if prompt_tokens.len() + to_sample > model::MAX_SEQ_LEN - 10 {
-        let to_remove = prompt_tokens.len() + to_sample + 10 - model::MAX_SEQ_LEN;
+    let prompt_tokens = if prompt_tokens.len() + to_sample > quantized_llama::MAX_SEQ_LEN - 10 {
+        let to_remove = prompt_tokens.len() + to_sample + 10 - quantized_llama::MAX_SEQ_LEN;
         prompt_tokens[prompt_tokens.len().saturating_sub(to_remove)..].to_vec()
     } else {
         prompt_tokens
     };
-    let mut all_tokens = vec![];
+
     let mut logits_processor = {
         let temperature = 0.0; // TODO: make this a parameter
         let sampling = if temperature <= 0. {
@@ -91,6 +170,8 @@ pub async fn run() -> anyhow::Result<()> {
         logits_processor.sample(&logits)?
     };
     let prompt_dt = start_prompt_processing.elapsed();
+
+    let mut all_tokens = vec![];
     all_tokens.push(next_token);
     if let Some(t) = tos.next_token(next_token)? {
         print!("{t}");
