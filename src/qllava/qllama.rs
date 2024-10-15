@@ -60,7 +60,7 @@ pub fn load_qllama_model(
 
 pub fn format_prompt(prompt: &str) -> String {
     format!(
-        "<s><|system|>\n<|end|>\n<|user|>\n{text_msg}<|end|>\n<|assistant|>\n",
+        "<s><|system|>\n<|end|>\n<|user|>\n<image>\n{text_msg}<|end|>\n<|assistant|>\n",
         text_msg = prompt,
     )
 }
