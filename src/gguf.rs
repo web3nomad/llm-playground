@@ -135,11 +135,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (image_size, image_tensor) = load_image_to_tensor(
         &device,
-        "models/20240923-173209.jpeg",
+        // "models/20240923-173209.jpeg",
+        "models/frames/4000.jpg",
         "models/llava-phi-3/preprocessor_config.json",
     )?;
 
-    let (_clip_vision_config,) = load_clip()?;
+    let (clip_vision_model, mm_projector) = load_clip(
+        &device,
+        "models/llava-phi-3/llava-phi-3-mini-mmproj-f16.gguf",
+    )?;
 
     let image_token_id: i64 = 32038; // see tokenizer.json
     let bos_token_id: i64 = 1;
@@ -157,6 +161,8 @@ pub async fn run() -> anyhow::Result<()> {
         &[image_tensor],
         &[image_size],
         image_token_id,
+        &clip_vision_model,
+        &mm_projector,
     )?;
 
     generate(&device, input_embeds, qllama)?;

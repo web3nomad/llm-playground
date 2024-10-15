@@ -3,12 +3,85 @@ use super::{
     QLlama,
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
-use candle_transformers::models::clip::vision_model::ClipVisionConfig;
+use candle_nn::{seq, Activation, Module, Sequential};
+use candle_transformers::{
+    models::{
+        clip::vision_model::{ClipVisionConfig, ClipVisionTransformer},
+        with_tracing::Linear,
+    },
+    quantized_var_builder,
+};
 use tokenizers::Tokenizer;
 
-pub fn load_clip() -> anyhow::Result<(ClipVisionConfig,)> {
+pub struct MMProjector {
+    pub modules: Sequential,
+}
+
+impl MMProjector {
+    pub fn load(
+        device: &Device,
+        vb: &quantized_var_builder::VarBuilder,
+    ) -> candle_core::Result<Self> {
+        // let text_hidden_size: usize = 3072;
+        // let mm_hidden_size: usize = 1024;
+        let modules = {
+            let layer = Linear::from_weights(
+                vb.pp("mm.0").get_no_shape("weight")?.dequantize(device)?,
+                Some(vb.pp("mm.0").get_no_shape("bias")?.dequantize(device)?),
+            );
+            let mut modules = seq().add(layer);
+            let mlp_depth = 2;
+            for i in 1..mlp_depth {
+                let layer = Linear::from_weights(
+                    vb.pp(format!("mm.{}", i * 2))
+                        .get_no_shape("weight")?
+                        .dequantize(device)?,
+                    Some(
+                        vb.pp(format!("mm.{}", i * 2))
+                            .get_no_shape("bias")?
+                            .dequantize(device)?,
+                    ),
+                );
+                modules = modules.add(Activation::Gelu).add(layer);
+            }
+            modules
+        };
+        Ok(Self { modules })
+    }
+
+    pub fn forward(&self, x: &Tensor) -> anyhow::Result<Tensor> {
+        let res = self.modules.forward(x)?;
+        Ok(res)
+    }
+}
+
+pub fn load_clip(
+    device: &Device,
+    gguf_model_path: &str,
+) -> anyhow::Result<(ClipVisionTransformer, MMProjector)> {
+    let vb = quantized_var_builder::VarBuilder::from_gguf(gguf_model_path, &device)?;
+    // println!("Loaded gguf model {:?}", vb.pp("mm.0").get_no_shape("bias"));
+    let mm_projector = MMProjector::load(&device, &vb)?;
     let clip_vision_config = ClipVisionConfig::clip_vit_large_patch14_336();
-    Ok((clip_vision_config,))
+    let model_file = {
+        let api = hf_hub::api::sync::Api::new()?;
+        let api = api.repo(hf_hub::Repo::with_revision(
+            "openai/clip-vit-large-patch14-336".to_string(),
+            hf_hub::RepoType::Model,
+            "refs/pr/8".to_string(),
+        ));
+        api.get("model.safetensors")?
+    };
+    let vb = unsafe {
+        candle_nn::var_builder::VarBuilder::from_mmaped_safetensors(
+            &[model_file.clone()],
+            DType::F32,
+            &device,
+        )?
+    };
+    let vision_model = ClipVisionTransformer::new(vb.pp("vision_model"), &clip_vision_config)?;
+
+    Ok((vision_model, mm_projector))
 }
 
 pub fn load_image_to_tensor(
@@ -22,7 +95,8 @@ pub fn load_image_to_tensor(
 
     let img = image::ImageReader::open(image_file_path)?.decode()?;
     let image_tensor = image_processor.preprocess(&img)?.unsqueeze(0)?;
-    let image_tensor = image_tensor.to_dtype(DType::BF16)?.to_device(&device)?;
+    // let image_tensor = image_tensor.to_dtype(DType::BF16)?.to_device(&device)?;
+    let image_tensor = image_tensor.to_device(&device)?;
     // println!("Image size: {:?}", (img.width(), img.height()));
     // println!("Image tensor: {:?}", image_tensor);
     Ok(((img.width(), img.height()), image_tensor))
@@ -97,12 +171,28 @@ pub fn tokenizer_image_token(
 /// x shape: Tensor[dims 1, 3, 336, 336; bf16, metal:4294969862]
 /// clip_vision_tower result shape: Tensor[dims 1, 576, 1024; bf16, metal:4294969862]
 /// mm_projector result shape: Tensor[dims 1, 576, 3072; bf16, metal:4294969862]
-fn encode_images(x: &Tensor) -> anyhow::Result<Tensor> {
-    println!("x shape: {:?}", x);
-    // let image_features = self.clip_vision_tower.forward(x)?;
-    // let image_features = self.mm_projector.forward(&image_features)?;
-    // Ok(image_features)
-    Ok(x.to_owned())
+fn encode_images(
+    x: &Tensor,
+    clip_vision_model: &ClipVisionTransformer,
+    mm_projector: &MMProjector,
+) -> anyhow::Result<Tensor> {
+    // println!("x shape: {:?}", x);
+    // let image_features = clip_vision_tower.forward(x)?;
+    let image_features = {
+        let select_layer = -2;
+        // let x = x.to_dtype(DType::F32)?;
+        let result = clip_vision_model.output_hidden_states(x)?;
+        let index = result.len() as isize + select_layer;
+        let result = result[index as usize].clone();
+        result.i((.., 1..))?
+    };
+    // let image_features = clip_vision_model.forward(&x.to_dtype(DType::F32)?)?;
+    // println!("clip_vision_tower result shape: {:?}", image_features);
+    let image_features = mm_projector.forward(&image_features)?;
+    // println!("mm_projector result shape: {:?}", image_features);
+    // let image_features = image_features.to_dtype(DType::BF16)?;
+    // println!("image_features shape: {:?}", image_features);
+    Ok(image_features)
 }
 
 pub fn prepare_inputs_labels_for_multimodal(
@@ -112,9 +202,11 @@ pub fn prepare_inputs_labels_for_multimodal(
     images: &[Tensor],
     _image_sizes: &[(u32, u32)],
     image_token_id: i64,
+    clip_vision_model: &ClipVisionTransformer,
+    mm_projector: &MMProjector,
 ) -> anyhow::Result<Tensor> {
     let concat_images = Tensor::cat(images, 0)?;
-    let image_features_together = encode_images(&concat_images)?;
+    let image_features_together = encode_images(&concat_images, clip_vision_model, mm_projector)?;
     let split_sizes = images
         .iter()
         .map(|x| x.shape().dims()[0])
@@ -177,10 +269,10 @@ pub fn prepare_inputs_labels_for_multimodal(
         input_embeds
     };
     let mut cur_new_input_embeds = Vec::new();
-    for (i, _image_feature) in image_features.iter().enumerate() {
+    for (i, image_feature) in image_features.iter().enumerate() {
         cur_new_input_embeds.push(input_embed_no_ims[i].clone());
-        // TODO encode_images 还没实现 projection, 这里先不放进去, 不然 shape 不对
-        // cur_new_input_embeds.push(image_feature.clone());
+        // 如果 encode_images 还没实现, 这里先不放进去, 不然 shape 不对
+        cur_new_input_embeds.push(image_feature.clone());
     }
     cur_new_input_embeds.push(input_embed_no_ims[image_features.len()].clone());
     let new_input_embeds = Tensor::cat(&cur_new_input_embeds, 0)?;
