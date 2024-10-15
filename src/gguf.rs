@@ -10,7 +10,11 @@ use candle_transformers::{
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-pub fn generate(device: &Device, prompt_str: &str, mut qllama: QLlama) -> anyhow::Result<()> {
+pub fn generate_legacy(
+    device: &Device,
+    prompt_str: &str,
+    mut qllama: QLlama,
+) -> anyhow::Result<()> {
     let mut tos = TokenOutputStream::new(qllama.tokenizer);
     let to_sample = qllama.sample_len.saturating_sub(1);
 
@@ -48,16 +52,16 @@ pub fn generate(device: &Device, prompt_str: &str, mut qllama: QLlama) -> anyhow
         let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
         let logits = qllama.model.forward(&input, prompt_tokens.len() + index)?;
         let logits = logits.squeeze(0)?;
-        let logits = if qllama.repeat_penalty == 1. {
-            logits
-        } else {
-            let start_at = all_tokens.len().saturating_sub(qllama.repeat_last_n);
-            candle_transformers::utils::apply_repeat_penalty(
-                &logits,
-                qllama.repeat_penalty,
-                &all_tokens[start_at..],
-            )?
-        };
+        // let logits = if qllama.repeat_penalty == 1. {
+        //     logits
+        // } else {
+        //     let start_at = all_tokens.len().saturating_sub(qllama.repeat_last_n);
+        //     candle_transformers::utils::apply_repeat_penalty(
+        //         &logits,
+        //         qllama.repeat_penalty,
+        //         &all_tokens[start_at..],
+        //     )?
+        // };
         next_token = logits_processor.sample(&logits)?;
         all_tokens.push(next_token);
         if let Some(t) = tos.next_token(next_token)? {
@@ -78,6 +82,50 @@ pub fn generate(device: &Device, prompt_str: &str, mut qllama: QLlama) -> anyhow
     Ok(())
 }
 
+pub fn generate(
+    device: &Device,
+    mut input_embeds: Tensor,
+    mut qllama: QLlama,
+) -> anyhow::Result<()> {
+    let mut tos = TokenOutputStream::new(qllama.tokenizer.clone());
+    let to_sample = qllama.sample_len.saturating_sub(1);
+
+    let mut logits_processor = LogitsProcessor::from_sampling(qllama.seed, qllama.sampling.clone());
+    let mut index_pos = 0;
+    for index in 0..to_sample {
+        let (_, input_embeds_len, _) = input_embeds.dims3()?;
+        // use kv cache, it is implemented in quantized llama
+        let (context_size, context_index) = if index > 0 {
+            (1, index_pos)
+        } else {
+            (input_embeds_len, 0)
+        };
+        let input = input_embeds.i((.., input_embeds_len.saturating_sub(context_size).., ..))?;
+        let logits = qllama.model.forward_input_embed(&input, context_index)?;
+        let logits = logits.squeeze(0)?;
+        let (_, input_len, _) = input.dims3()?;
+        index_pos += input_len;
+        let next_token = logits_processor.sample(&logits)?;
+        let next_token_tensor = Tensor::from_vec(vec![next_token], 1, &device)?;
+        let next_embeds = qllama.model.embed(&next_token_tensor)?.unsqueeze(0)?;
+        input_embeds = Tensor::cat(&[input_embeds, next_embeds], 1)?;
+        if next_token == qllama.eos_token_id {
+            break;
+        }
+        if let Some(t) = tos.next_token(next_token)? {
+            print!("{t}");
+            std::io::stdout().flush()?;
+        }
+    }
+    if let Some(rest) = tos.decode_rest().map_err(candle_core::Error::msg)? {
+        print!("{rest}");
+    }
+    std::io::stdout().flush()?;
+    println!("");
+
+    Ok(())
+}
+
 fn load_image_to_tensor(
     device: &Device,
     image_file_path: &str,
@@ -89,11 +137,9 @@ fn load_image_to_tensor(
 
     let img = image::ImageReader::open(image_file_path)?.decode()?;
     let image_tensor = image_processor.preprocess(&img)?.unsqueeze(0)?;
-    let image_tensor = image_tensor.to_dtype(DType::F16)?.to_device(&device)?;
-
-    println!("Image size: {:?}", (img.width(), img.height()));
-    println!("Image tensor: {:?}", image_tensor);
-
+    let image_tensor = image_tensor.to_dtype(DType::BF16)?.to_device(&device)?;
+    // println!("Image size: {:?}", (img.width(), img.height()));
+    // println!("Image tensor: {:?}", image_tensor);
     Ok(((img.width(), img.height()), image_tensor))
 }
 
@@ -165,12 +211,17 @@ fn tokenizer_image_token(
     {
         input_ids.extend(x[1..].to_vec())
     }
-    println!("input_ids: {:?}", input_ids);
+    // println!("input_ids: {:?}", input_ids);
     let input_len = input_ids.len();
     Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu).map_err(anyhow::Error::msg)
 }
 
+/// image 564 564
+/// x shape: Tensor[dims 1, 3, 336, 336; bf16, metal:4294969862]
+/// clip_vision_tower result shape: Tensor[dims 1, 576, 1024; bf16, metal:4294969862]
+/// mm_projector result shape: Tensor[dims 1, 576, 3072; bf16, metal:4294969862]
 fn encode_images(x: &Tensor) -> anyhow::Result<Tensor> {
+    println!("x shape: {:?}", x);
     // let image_features = self.clip_vision_tower.forward(x)?;
     // let image_features = self.mm_projector.forward(&image_features)?;
     // Ok(image_features)
@@ -182,7 +233,7 @@ fn prepare_inputs_labels_for_multimodal(
     qllama: &QLlama,
     input_ids: &Tensor,
     images: &[Tensor],
-    image_sizes: &[(u32, u32)],
+    _image_sizes: &[(u32, u32)],
     image_token_index: i64,
 ) -> anyhow::Result<Tensor> {
     let concat_images = Tensor::cat(images, 0)?;
@@ -241,9 +292,9 @@ fn prepare_inputs_labels_for_multimodal(
     let input_ids_noim_len = input_ids_noim.len();
     image_indices.push((input_ids_noim_len) as i64);
     let input_ids_noim = Tensor::from_vec(input_ids_noim, input_ids_noim_len, &device)?;
-    println!("input_ids_noim: {:?}", input_ids_noim);
-    let cur_input_embeds = qllama.embed(&input_ids_noim)?;
-    println!("cur_input_embeds: {:?}", cur_input_embeds);
+    // println!("input_ids_noim: {:?}", input_ids_noim);
+    let cur_input_embeds = qllama.model.embed(&input_ids_noim)?;
+    // println!("cur_input_embeds: {:?}", cur_input_embeds);
     // can be replace by split if it is implemented in candle
     let input_embed_no_ims = {
         let mut input_embeds = Vec::new();
@@ -254,11 +305,29 @@ fn prepare_inputs_labels_for_multimodal(
         }
         input_embeds
     };
+    let mut cur_new_input_embeds = Vec::new();
+    for (i, _image_feature) in image_features.iter().enumerate() {
+        cur_new_input_embeds.push(input_embed_no_ims[i].clone());
+        // TODO encode_images 还没实现 projection, 这里先不放进去, 不然 shape 不对
+        // cur_new_input_embeds.push(image_feature.clone());
+    }
+    cur_new_input_embeds.push(input_embed_no_ims[image_features.len()].clone());
+    let new_input_embeds = Tensor::cat(&cur_new_input_embeds, 0)?;
 
-    // continue
+    // trancate
+    let tokenizer_model_max_length = Some(4096); // in models/llava-phi-3/tokenizer_config.json
+    let new_input_embeds = if let Some(tokenizer_model_max_length) = tokenizer_model_max_length {
+        let (new_input_embeds_length, _) = new_input_embeds.shape().dims2()?;
+        if new_input_embeds_length > tokenizer_model_max_length {
+            new_input_embeds.i((..tokenizer_model_max_length, ..))?
+        } else {
+            new_input_embeds
+        }
+    } else {
+        new_input_embeds
+    };
 
-    let tensor = Tensor::cat(images, 0)?;
-    Ok(tensor)
+    Ok(new_input_embeds.unsqueeze(0)?)
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -277,7 +346,7 @@ pub async fn run() -> anyhow::Result<()> {
         "models/llava-phi-3/preprocessor_config.json",
     )?;
 
-    let (clip_vision_config,) = load_clip()?;
+    let (_clip_vision_config,) = load_clip()?;
 
     let image_token_index: i64 = 32038; // see tokenizer.json
     let bos_token_id: i64 = 1;
@@ -288,7 +357,7 @@ pub async fn run() -> anyhow::Result<()> {
         bos_token_id,
     )?;
 
-    let mut input_embeds = prepare_inputs_labels_for_multimodal(
+    let input_embeds = prepare_inputs_labels_for_multimodal(
         &device,
         &qllama,
         &tokens,
@@ -297,7 +366,8 @@ pub async fn run() -> anyhow::Result<()> {
         image_token_index,
     )?;
 
-    generate(&device, prompt_str.as_str(), qllama)?;
+    generate(&device, input_embeds, qllama)?;
+    // generate_legacy(&device, prompt_str.as_str(), qllama)?;
 
     Ok(())
 }
