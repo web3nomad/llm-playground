@@ -1,4 +1,5 @@
-use candle_core::{quantized::gguf_file, Device};
+use candle_core::{quantized::gguf_file, Device, Tensor};
+use candle_nn::{embedding, Embedding, Module};
 use candle_transformers::{generation::Sampling, models::quantized_llama};
 use tokenizers::Tokenizer;
 
@@ -21,6 +22,14 @@ pub struct QLlama {
     pub seed: u64,
     pub repeat_penalty: f32,
     pub repeat_last_n: usize,
+    wte: Embedding,
+}
+
+impl QLlama {
+    pub fn embed(&self, x: &Tensor) -> anyhow::Result<Tensor> {
+        let result = self.wte.forward(x)?;
+        Ok(result)
+    }
 }
 
 pub fn load_qllama_model(
@@ -31,6 +40,7 @@ pub fn load_qllama_model(
     let model_path = std::path::PathBuf::from(gguf_model_path);
     let mut file = std::fs::File::open(&model_path)?;
     let gguf_content = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
+    let tok_embeddings = gguf_content.tensor(&mut file, "token_embd.weight", device)?;
     // let gguf_metadata = gguf_content.metadata.clone();
     let model = quantized_llama::ModelWeights::from_gguf(gguf_content, &mut file, &device)?;
     // println!("model built");
@@ -45,6 +55,11 @@ pub fn load_qllama_model(
             Sampling::All { temperature }
         }
     };
+    // from models/llava-phi-3/config.json
+    // let vocab_size: usize = 32064;
+    let hidden_size: usize = 3072;
+    let tok_embeddings = tok_embeddings.dequantize(device)?;
+    let wte = Embedding::new(tok_embeddings, hidden_size);
     Ok(QLlama {
         model,
         tokenizer,
@@ -55,6 +70,7 @@ pub fn load_qllama_model(
         seed: 299792458,
         repeat_penalty: 1.1,
         repeat_last_n: 64,
+        wte,
     })
 }
 

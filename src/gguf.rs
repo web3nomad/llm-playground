@@ -179,6 +179,7 @@ fn encode_images(x: &Tensor) -> anyhow::Result<Tensor> {
 
 fn prepare_inputs_labels_for_multimodal(
     device: &Device,
+    qllama: &QLlama,
     input_ids: &Tensor,
     images: &[Tensor],
     image_sizes: &[(u32, u32)],
@@ -240,17 +241,19 @@ fn prepare_inputs_labels_for_multimodal(
     let input_ids_noim_len = input_ids_noim.len();
     image_indices.push((input_ids_noim_len) as i64);
     let input_ids_noim = Tensor::from_vec(input_ids_noim, input_ids_noim_len, &device)?;
-    // let cur_input_embeds = self.llama.embed(&input_ids_noim)?;
-    // // can be replace by split if it is implemented in candle
-    // let input_embed_no_ims = {
-    //     let mut input_embeds = Vec::new();
-    //     for i in 0..image_indices.len() - 1 {
-    //         let start = (image_indices[i]) as usize;
-    //         let end = image_indices[i + 1] as usize;
-    //         input_embeds.push(cur_input_embeds.i((start..end, ..))?)
-    //     }
-    //     input_embeds
-    // };
+    println!("input_ids_noim: {:?}", input_ids_noim);
+    let cur_input_embeds = qllama.embed(&input_ids_noim)?;
+    println!("cur_input_embeds: {:?}", cur_input_embeds);
+    // can be replace by split if it is implemented in candle
+    let input_embed_no_ims = {
+        let mut input_embeds = Vec::new();
+        for i in 0..image_indices.len() - 1 {
+            let start = (image_indices[i]) as usize;
+            let end = image_indices[i + 1] as usize;
+            input_embeds.push(cur_input_embeds.i((start..end, ..))?)
+        }
+        input_embeds
+    };
 
     // continue
 
@@ -287,6 +290,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mut input_embeds = prepare_inputs_labels_for_multimodal(
         &device,
+        &qllama,
         &tokens,
         &[image_tensor],
         &[image_size],
