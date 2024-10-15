@@ -23,15 +23,18 @@ pub struct QLlama {
     pub repeat_last_n: usize,
 }
 
-pub fn load_qllama_model(device: &Device) -> anyhow::Result<QLlama> {
-    let model_path = std::path::PathBuf::from("models/llava-phi-3/llava-phi-3-mini-int4.gguf");
+pub fn load_qllama_model(
+    device: &Device,
+    gguf_model_path: &str,
+    tokenizer_path: &str,
+) -> anyhow::Result<QLlama> {
+    let model_path = std::path::PathBuf::from(gguf_model_path);
     let mut file = std::fs::File::open(&model_path)?;
     let gguf_content = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
     // let gguf_metadata = gguf_content.metadata.clone();
     let model = quantized_llama::ModelWeights::from_gguf(gguf_content, &mut file, &device)?;
     // println!("model built");
-    let tokenizer =
-        Tokenizer::from_file("models/llava-phi-3/tokenizer.json").map_err(anyhow::Error::msg)?;
+    let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(anyhow::Error::msg)?;
     // let eos_token_id = gguf_metadata["tokenizer.ggml.eos_token_id"].to_u32()?;
     // let eos_token = tokenizer.id_to_token(eos_token_id);
     let sampling = {

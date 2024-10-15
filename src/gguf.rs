@@ -1,5 +1,7 @@
-use super::qllava::{format_prompt, load_qllama_model, QLlama};
-use candle_core::{Device, Tensor};
+use super::qllava::{
+    format_prompt, load_qllama_model, HFPreProcessorConfig, ImageProcessor, QLlama,
+};
+use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_transformers::{generation::LogitsProcessor, models::quantized_llama};
 use std::io::Write;
@@ -74,9 +76,39 @@ pub fn generate(mut qllama: QLlama, device: &Device) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn load_image_to_tensor(
+    device: &Device,
+    image_file_path: &str,
+    preprocessor_config_file_path: &str,
+) -> anyhow::Result<()> {
+    let preprocessor_config: HFPreProcessorConfig =
+        serde_json::from_slice(&std::fs::read(preprocessor_config_file_path)?)?;
+    let image_processor = ImageProcessor::from_hf_preprocessor_config(&preprocessor_config);
+
+    let img = image::ImageReader::open(image_file_path)?.decode()?;
+    let image_tensor = image_processor.preprocess(&img)?.unsqueeze(0)?;
+    let image_tensor = image_tensor.to_dtype(DType::F16)?.to_device(&device)?;
+
+    println!("Image size: {:?}", (img.width(), img.height()));
+    println!("Image tensor: {:?}", image_tensor);
+
+    Ok(())
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let device = Device::new_metal(0)?;
-    let qllama = load_qllama_model(&device)?;
+    let qllama = load_qllama_model(
+        &device,
+        "models/llava-phi-3/llava-phi-3-mini-int4.gguf",
+        "models/llava-phi-3/tokenizer.json",
+    )?;
+
+    let _ = load_image_to_tensor(
+        &device,
+        "models/20240923-173209.jpeg",
+        "models/llava-phi-3/preprocessor_config.json",
+    )?;
+
     generate(qllama, &device)?;
 
     Ok(())
