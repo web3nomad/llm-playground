@@ -1,65 +1,10 @@
-use candle_core::{quantized::gguf_file, Device, Tensor};
+use super::qllava::{format_prompt, load_qllama_model, QLlama};
+use candle_core::{Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
-use candle_transformers::{
-    generation::{LogitsProcessor, Sampling},
-    models::quantized_llama,
-};
+use candle_transformers::{generation::LogitsProcessor, models::quantized_llama};
 use std::io::Write;
-use tokenizers::Tokenizer;
 
-struct QLlama {
-    model: quantized_llama::ModelWeights,
-    tokenizer: Tokenizer,
-    eos_token_id: u32,
-    sampling: Sampling,
-    sample_len: usize,
-    seed: u64,
-    repeat_penalty: f32,
-    repeat_last_n: usize,
-}
-
-fn load_qllama_model(device: &Device) -> anyhow::Result<QLlama> {
-    let model_path = std::path::PathBuf::from("models/llava-phi-3/llava-phi-3-mini-int4.gguf");
-    let mut file = std::fs::File::open(&model_path)?;
-    let gguf_content = gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
-    // let gguf_metadata = gguf_content.metadata.clone();
-    let model = quantized_llama::ModelWeights::from_gguf(gguf_content, &mut file, &device)?;
-    // println!("model built");
-    let tokenizer =
-        Tokenizer::from_file("models/llava-phi-3/tokenizer.json").map_err(anyhow::Error::msg)?;
-    // let eos_token_id = gguf_metadata["tokenizer.ggml.eos_token_id"].to_u32()?;
-    // let eos_token = tokenizer.id_to_token(eos_token_id);
-    let sampling = {
-        let temperature = 0.0; // TODO: make this a parameter
-        if temperature <= 0. {
-            Sampling::ArgMax
-        } else {
-            Sampling::All { temperature }
-        }
-    };
-    Ok(QLlama {
-        model,
-        tokenizer,
-        // eos_token_id, // <|endoftext|>
-        eos_token_id: 32007, // <|end|>  模型实际输出的是 32007, 而不是 gguf 里配置的 32000
-        sampling,
-        sample_len: 1000,
-        seed: 299792458,
-        repeat_penalty: 1.1,
-        repeat_last_n: 64,
-    })
-}
-
-fn format_prompt(prompt: &str) -> String {
-    format!(
-        "<s><|system|>\n<|end|>\n<|user|>\n{text_msg}<|end|>\n<|assistant|>\n",
-        text_msg = prompt,
-    )
-}
-
-pub async fn run() -> anyhow::Result<()> {
-    let device = Device::new_metal(0)?;
-    let mut qllama = load_qllama_model(&device)?;
+pub fn generate(mut qllama: QLlama, device: &Device) -> anyhow::Result<()> {
     let mut tos = TokenOutputStream::new(qllama.tokenizer);
     let to_sample = qllama.sample_len.saturating_sub(1);
 
@@ -125,6 +70,14 @@ pub async fn run() -> anyhow::Result<()> {
     }
     std::io::stdout().flush()?;
     println!("");
+
+    Ok(())
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let device = Device::new_metal(0)?;
+    let qllama = load_qllama_model(&device)?;
+    generate(qllama, &device)?;
 
     Ok(())
 }

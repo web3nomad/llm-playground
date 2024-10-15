@@ -7,6 +7,7 @@ mod gguf;
 mod mistral;
 #[allow(dead_code)]
 mod phi3v;
+mod qllava;
 
 #[tokio::main]
 async fn main() -> Result<()> {
