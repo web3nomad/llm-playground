@@ -1,14 +1,17 @@
 use super::{
     image_processor::{HFPreProcessorConfig, ImageProcessor},
+    vision_model::ClipVisionTransformer,
     QLlama,
 };
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{
+    // DType,
+    Device,
+    IndexOp,
+    Tensor,
+};
 use candle_nn::{seq, Activation, Module, Sequential};
 use candle_transformers::{
-    models::{
-        clip::vision_model::{ClipVisionConfig, ClipVisionTransformer},
-        with_tracing::Linear,
-    },
+    models::{clip::vision_model::ClipVisionConfig, with_tracing::Linear},
     quantized_var_builder,
 };
 use tokenizers::Tokenizer;
@@ -63,24 +66,24 @@ pub fn load_clip(
     // println!("Loaded gguf model {:?}", vb.pp("mm.0").get_no_shape("bias"));
     let mm_projector = MMProjector::load(&device, &vb)?;
     let clip_vision_config = ClipVisionConfig::clip_vit_large_patch14_336();
-    let model_file = {
-        let api = hf_hub::api::sync::Api::new()?;
-        let api = api.repo(hf_hub::Repo::with_revision(
-            "openai/clip-vit-large-patch14-336".to_string(),
-            hf_hub::RepoType::Model,
-            "refs/pr/8".to_string(),
-        ));
-        api.get("model.safetensors")?
-    };
-    let vb = unsafe {
-        candle_nn::var_builder::VarBuilder::from_mmaped_safetensors(
-            &[model_file.clone()],
-            DType::F32,
-            &device,
-        )?
-    };
-    let vision_model = ClipVisionTransformer::new(vb.pp("vision_model"), &clip_vision_config)?;
-
+    let vision_model = ClipVisionTransformer::new(vb.pp("v"), &clip_vision_config)?;
+    // let model_file = {
+    //     let api = hf_hub::api::sync::Api::new()?;
+    //     let api = api.repo(hf_hub::Repo::with_revision(
+    //         "openai/clip-vit-large-patch14-336".to_string(),
+    //         hf_hub::RepoType::Model,
+    //         "refs/pr/8".to_string(),
+    //     ));
+    //     api.get("model.safetensors")?
+    // };
+    // let vb = unsafe {
+    //     candle_nn::var_builder::VarBuilder::from_mmaped_safetensors(
+    //         &[model_file.clone()],
+    //         DType::F32,
+    //         &device,
+    //     )?
+    // };
+    // let vision_model = ClipVisionTransformer::new(vb.pp("vision_model"), &clip_vision_config)?;
     Ok((vision_model, mm_projector))
 }
 
