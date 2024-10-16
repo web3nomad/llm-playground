@@ -1,21 +1,9 @@
-use candle_core::{DType, Result, Tensor, D};
-use candle_nn::Module;
+use super::linear::QLinear;
+use candle_core::{shape::D, DType, Module, Result, Tensor};
 use candle_transformers::{
     models::clip::{text_model::Activation, EncoderConfig},
     quantized_var_builder,
 };
-
-pub fn linear(
-    in_dim: usize,
-    out_dim: usize,
-    vb: quantized_var_builder::VarBuilder,
-) -> Result<candle_nn::linear::Linear> {
-    let ws = vb.get((out_dim, in_dim), "weight")?;
-    let ws = ws.dequantize(vb.device())?;
-    let bs = vb.get(out_dim, "bias")?;
-    let bs = bs.dequantize(vb.device())?;
-    Ok(candle_nn::linear::Linear::new(ws, Some(bs)))
-}
 
 fn layer_norm(
     size: usize,
@@ -35,10 +23,10 @@ fn layer_norm(
 
 #[derive(Clone, Debug)]
 struct ClipAttention {
-    k_proj: candle_nn::Linear,
-    v_proj: candle_nn::Linear,
-    q_proj: candle_nn::Linear,
-    out_proj: candle_nn::Linear,
+    k_proj: QLinear,
+    v_proj: QLinear,
+    q_proj: QLinear,
+    out_proj: QLinear,
     head_dim: usize,
     scale: f64,
     num_attention_heads: usize,
@@ -48,10 +36,10 @@ impl ClipAttention {
     fn new(vs: quantized_var_builder::VarBuilder, c: &EncoderConfig) -> Result<Self> {
         let embed_dim = c.embed_dim();
         let num_attention_heads = c.num_attention_heads();
-        let k_proj = linear(embed_dim, embed_dim, vs.pp("attn_k"))?;
-        let v_proj = linear(embed_dim, embed_dim, vs.pp("attn_v"))?;
-        let q_proj = linear(embed_dim, embed_dim, vs.pp("attn_q"))?;
-        let out_proj = linear(embed_dim, embed_dim, vs.pp("attn_out"))?;
+        let k_proj = QLinear::load(embed_dim, embed_dim, vs.pp("attn_k"))?;
+        let v_proj = QLinear::load(embed_dim, embed_dim, vs.pp("attn_v"))?;
+        let q_proj = QLinear::load(embed_dim, embed_dim, vs.pp("attn_q"))?;
+        let out_proj = QLinear::load(embed_dim, embed_dim, vs.pp("attn_out"))?;
         let head_dim = embed_dim / num_attention_heads;
         let scale = (head_dim as f64).powf(-0.5);
 
@@ -116,18 +104,18 @@ impl ClipAttention {
 
 #[derive(Clone, Debug)]
 struct ClipMlp {
-    fc1: candle_nn::Linear,
-    fc2: candle_nn::Linear,
+    ffn_down: QLinear,
+    ffn_up: QLinear,
     activation: Activation,
 }
 
 impl ClipMlp {
     fn new(vs: quantized_var_builder::VarBuilder, c: &EncoderConfig) -> Result<Self> {
-        let fc1 = linear(c.embed_dim(), c.intermediate_size(), vs.pp("ffn_down"))?;
-        let fc2 = linear(c.intermediate_size(), c.embed_dim(), vs.pp("ffn_up"))?;
+        let ffn_down = QLinear::load(c.embed_dim(), c.intermediate_size(), vs.pp("ffn_down"))?;
+        let ffn_up = QLinear::load(c.intermediate_size(), c.embed_dim(), vs.pp("ffn_up"))?;
         Ok(ClipMlp {
-            fc1,
-            fc2,
+            ffn_down,
+            ffn_up,
             activation: c.activation(),
         })
     }
@@ -135,8 +123,8 @@ impl ClipMlp {
 
 impl ClipMlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let xs = self.fc1.forward(xs)?;
-        self.fc2.forward(&self.activation.forward(&xs)?)
+        let xs = self.ffn_down.forward(xs)?;
+        self.ffn_up.forward(&self.activation.forward(&xs)?)
     }
 }
 

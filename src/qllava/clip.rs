@@ -1,19 +1,15 @@
 use super::{
     image_processor::{HFPreProcessorConfig, ImageProcessor},
+    linear::QLinear,
     vision_model::ClipVisionTransformer,
     QLlama,
 };
-use candle_core::{
-    // DType,
-    Device,
-    IndexOp,
-    Tensor,
+use candle_core::{Device, IndexOp, Module, Tensor};
+use candle_nn::{
+    sequential::{seq, Sequential},
+    Activation,
 };
-use candle_nn::{seq, Activation, Module, Sequential};
-use candle_transformers::{
-    models::{clip::vision_model::ClipVisionConfig, with_tracing::Linear},
-    quantized_var_builder,
-};
+use candle_transformers::{models::clip::vision_model::ClipVisionConfig, quantized_var_builder};
 use tokenizers::Tokenizer;
 
 pub struct MMProjector {
@@ -21,30 +17,19 @@ pub struct MMProjector {
 }
 
 impl MMProjector {
-    pub fn load(
-        device: &Device,
-        vb: &quantized_var_builder::VarBuilder,
-    ) -> candle_core::Result<Self> {
-        // let text_hidden_size: usize = 3072;
-        // let mm_hidden_size: usize = 1024;
+    pub fn load(vb: quantized_var_builder::VarBuilder) -> candle_core::Result<Self> {
+        let text_hidden_size: usize = 3072;
+        let mm_hidden_size: usize = 1024;
         let modules = {
-            let layer = Linear::from_weights(
-                vb.pp("mm.0").get_no_shape("weight")?.dequantize(device)?,
-                Some(vb.pp("mm.0").get_no_shape("bias")?.dequantize(device)?),
-            );
+            let layer = QLinear::load(mm_hidden_size, text_hidden_size, vb.pp("mm.0"))?;
             let mut modules = seq().add(layer);
             let mlp_depth = 2;
             for i in 1..mlp_depth {
-                let layer = Linear::from_weights(
-                    vb.pp(format!("mm.{}", i * 2))
-                        .get_no_shape("weight")?
-                        .dequantize(device)?,
-                    Some(
-                        vb.pp(format!("mm.{}", i * 2))
-                            .get_no_shape("bias")?
-                            .dequantize(device)?,
-                    ),
-                );
+                let layer = QLinear::load(
+                    text_hidden_size,
+                    text_hidden_size,
+                    vb.pp(format!("mm.{}", i * 2)),
+                )?;
                 modules = modules.add(Activation::Gelu).add(layer);
             }
             modules
@@ -52,19 +37,18 @@ impl MMProjector {
         Ok(Self { modules })
     }
 
-    pub fn forward(&self, x: &Tensor) -> anyhow::Result<Tensor> {
-        let res = self.modules.forward(x)?;
-        Ok(res)
+    pub fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        self.modules.forward(x)
     }
 }
 
 pub fn load_clip(
     device: &Device,
     gguf_model_path: &str,
-) -> anyhow::Result<(ClipVisionTransformer, MMProjector)> {
+) -> candle_core::Result<(ClipVisionTransformer, MMProjector)> {
     let vb = quantized_var_builder::VarBuilder::from_gguf(gguf_model_path, &device)?;
     // println!("Loaded gguf model {:?}", vb.pp("mm.0").get_no_shape("bias"));
-    let mm_projector = MMProjector::load(&device, &vb)?;
+    let mm_projector = MMProjector::load(vb.clone())?;
     let clip_vision_config = ClipVisionConfig::clip_vit_large_patch14_336();
     let vision_model = ClipVisionTransformer::new(vb.pp("v"), &clip_vision_config)?;
     // let model_file = {
@@ -138,7 +122,7 @@ pub fn tokenizer_image_token(
     tokenizer: &Tokenizer,
     image_token_id: i64,
     bos_token_id: i64,
-) -> anyhow::Result<Tensor> {
+) -> candle_core::Result<Tensor> {
     let prompt_chunks = prompt
         .split("<image>")
         .map(|s| {
@@ -167,7 +151,7 @@ pub fn tokenizer_image_token(
     }
     // println!("input_ids: {:?}", input_ids);
     let input_len = input_ids.len();
-    Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu).map_err(anyhow::Error::msg)
+    Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu)
 }
 
 /// image 564 564
@@ -178,7 +162,7 @@ fn encode_images(
     x: &Tensor,
     clip_vision_model: &ClipVisionTransformer,
     mm_projector: &MMProjector,
-) -> anyhow::Result<Tensor> {
+) -> candle_core::Result<Tensor> {
     // println!("x shape: {:?}", x);
     // let image_features = clip_vision_tower.forward(x)?;
     let image_features = {
@@ -207,7 +191,7 @@ pub fn prepare_inputs_labels_for_multimodal(
     image_token_id: i64,
     clip_vision_model: &ClipVisionTransformer,
     mm_projector: &MMProjector,
-) -> anyhow::Result<Tensor> {
+) -> candle_core::Result<Tensor> {
     let concat_images = Tensor::cat(images, 0)?;
     let image_features_together = encode_images(&concat_images, clip_vision_model, mm_projector)?;
     let split_sizes = images

@@ -1,6 +1,6 @@
 use super::text_model::ClipEncoder;
-use candle_core::{IndexOp, Result, Shape, Tensor, D};
-use candle_nn::{Conv2dConfig, Module};
+use candle_core::{shape::D, IndexOp, Module, Result, Shape, Tensor};
+use candle_nn::Conv2dConfig;
 use candle_transformers::{
     models::clip::{vision_model::ClipVisionConfig, EncoderConfig},
     quantized_var_builder,
