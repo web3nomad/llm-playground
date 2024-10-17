@@ -4,7 +4,7 @@ use super::qllava::{
 };
 use candle_core::{Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
-use candle_transformers::{generation::LogitsProcessor, models::quantized_llama};
+use candle_transformers::generation::LogitsProcessor;
 use std::io::Write;
 
 pub fn generate(
@@ -58,13 +58,13 @@ pub async fn run() -> anyhow::Result<()> {
         "models/llava-phi-3/llava-phi-3-mini-int4.gguf",
         "models/llava-phi-3/tokenizer.json",
     )?;
-    let prompt_str = format_prompt("Describe this image.");
+    let prompt_str = format_prompt(r#"Describe the image in less than 50 words."#);
     println!("{}", &prompt_str);
 
     let (image_size, image_tensor) = load_image_to_tensor(
         &device,
-        // "models/20240923-173209.jpeg",
-        "models/frames/4000.jpg",
+        "models/20240923-173209.jpeg",
+        // "models/frames/4000.jpg",
         "models/llava-phi-3/preprocessor_config.json",
     )?;
 
