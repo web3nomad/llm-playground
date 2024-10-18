@@ -2,7 +2,7 @@ use super::{
     image_processor::{HFPreProcessorConfig, ImageProcessor},
     linear::QLinear,
     vision_model::ClipVisionTransformer,
-    QLlama,
+    QLLaVAPhi3,
 };
 use candle_core::{Device, IndexOp, Module, Tensor};
 use candle_nn::{
@@ -184,7 +184,7 @@ fn encode_images(
 
 pub fn prepare_inputs_labels_for_multimodal(
     device: &Device,
-    qllama: &QLlama,
+    QLLaVAPhi3 { llama, .. }: &QLLaVAPhi3,
     input_ids: &Tensor,
     images: &[Tensor],
     _image_sizes: &[(u32, u32)],
@@ -243,7 +243,7 @@ pub fn prepare_inputs_labels_for_multimodal(
     image_indices.push((input_ids_noim_len) as i64);
     let input_ids_noim = Tensor::from_vec(input_ids_noim, input_ids_noim_len, &device)?;
     // println!("input_ids_noim: {:?}", input_ids_noim);
-    let cur_input_embeds = qllama.model.embed(&input_ids_noim)?;
+    let cur_input_embeds = llama.embed(&input_ids_noim)?;
     // println!("cur_input_embeds: {:?}", cur_input_embeds);
     // can be replace by split if it is implemented in candle
     let input_embed_no_ims = {

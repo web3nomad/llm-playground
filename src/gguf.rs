@@ -1,6 +1,6 @@
-use super::qllava::{
-    format_prompt, load_clip, load_image_to_tensor, load_qllama_model,
-    prepare_inputs_labels_for_multimodal, tokenizer_image_token, QLlama,
+use super::quantized_llava_phi_3::{
+    load_clip, load_image_to_tensor, prepare_inputs_labels_for_multimodal, tokenizer_image_token,
+    QLLaVAPhi3,
 };
 use candle_core::{Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
@@ -20,11 +20,14 @@ const EOS_TOKEN_ID: u32 = 32007; // 模型实际输出的是 32007 <|end|>, 而�
 pub fn generate(
     device: &Device,
     mut input_embeds: Tensor,
-    mut qllama: QLlama,
+    QLLaVAPhi3 {
+        mut llama,
+        tokenizer,
+    }: QLLaVAPhi3,
     seed: u64,
     temperature: f64,
 ) -> anyhow::Result<()> {
-    let mut tos = TokenOutputStream::new(qllama.tokenizer.clone());
+    let mut tos = TokenOutputStream::new(tokenizer.clone());
     let sampling = {
         if temperature <= 0. {
             Sampling::ArgMax
@@ -43,13 +46,13 @@ pub fn generate(
             (input_embeds_len, 0)
         };
         let input = input_embeds.i((.., input_embeds_len.saturating_sub(context_size).., ..))?;
-        let logits = qllama.model.forward_input_embed(&input, context_index)?;
+        let logits = llama.forward_input_embed(&input, context_index)?;
         let logits = logits.squeeze(0)?;
         let (_, input_len, _) = input.dims3()?;
         index_pos += input_len;
         let next_token = logits_processor.sample(&logits)?;
         let next_token_tensor = Tensor::from_vec(vec![next_token], 1, &device)?;
-        let next_embeds = qllama.model.embed(&next_token_tensor)?.unsqueeze(0)?;
+        let next_embeds = llama.embed(&next_token_tensor)?.unsqueeze(0)?;
         input_embeds = Tensor::cat(&[input_embeds, next_embeds], 1)?;
         if next_token == EOS_TOKEN_ID {
             break;
@@ -70,12 +73,12 @@ pub fn generate(
 
 pub async fn run() -> anyhow::Result<()> {
     let device = Device::new_metal(0)?;
-    let qllama = load_qllama_model(
+    let qllama = QLLaVAPhi3::load(
         &device,
         "models/llava-phi-3/llava-phi-3-mini-int4.gguf",
         "models/llava-phi-3/tokenizer.json",
     )?;
-    let prompt_str = format_prompt(r#"Describe the image in less than 50 words."#);
+    let prompt_str = QLLaVAPhi3::format_prompt(r#"Describe the image in less than 50 words."#);
     println!("{}", &prompt_str);
 
     let (image_size, image_tensor) = load_image_to_tensor(
