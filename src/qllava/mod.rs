@@ -1,4 +1,5 @@
 mod qllama;
+mod quantized_llama;
 pub(super) use qllama::{format_prompt, load_qllama_model, QLlama};
 
 mod image_processor;

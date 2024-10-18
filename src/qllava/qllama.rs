@@ -1,5 +1,6 @@
+use super::quantized_llama;
 use candle_core::{quantized::gguf_file, Device};
-use candle_transformers::{generation::Sampling, models::quantized_llama};
+use candle_transformers::generation::Sampling;
 use tokenizers::Tokenizer;
 // use candle_nn::{Embedding, Module};
 
