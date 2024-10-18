@@ -1,4 +1,4 @@
-use super::quantized_llava_phi_3::{QLLaVAPhi3, EOS_TOKEN_ID, IMAGE_TOKEN_ID};
+use super::quantized_llava_phi_3::{self, QLLaVAPhi3, EOS_TOKEN_ID};
 use candle_core::{Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -90,27 +90,26 @@ pub async fn run() -> anyhow::Result<()> {
         "models/llava-phi-3/tokenizer.json",
     )?;
 
-    let prompt_str = QLLaVAPhi3::format_prompt(
+    let prompt_str = quantized_llava_phi_3::format_prompt(
         r#"You are an advanced image analysis AI. Examine the image and describe its contents in a concise, text-only format. Focus on identifying: People (including celebrities), actions, objects, animals or pets, nature elements, visual cues of sounds, human speech (if text bubbles present), displayed text (OCR), and brand logos. Provide specific examples for each category found in the image. Only mention categories that are present; omit any that are not detected. Use plain text format without lists or JSON. Be accurate and concise in your descriptions."#,
     );
     println!("{}", &prompt_str);
 
-    let (image_size, image_tensor) = QLLaVAPhi3::load_image(
+    let (image_size, image_tensor) = quantized_llava_phi_3::load_image(
         &device,
         "models/20240923-173209.jpeg",
         // "models/frames/4000.jpg",
         "models/llava-phi-3/preprocessor_config.json",
     )?;
 
-    let tokens = QLLaVAPhi3::tokenizer_image_token(prompt_str.as_str(), &qllavaphi3.tokenizer)?;
+    let tokens =
+        quantized_llava_phi_3::tokenizer_image_token(prompt_str.as_str(), &qllavaphi3.tokenizer)?;
 
     let input_embeds = qllavaphi3.prepare_inputs_labels_for_multimodal(
         &device,
-        &qllavaphi3,
         &tokens,
         &[image_tensor],
         &[image_size],
-        IMAGE_TOKEN_ID as i64,
     )?;
 
     generate(&device, input_embeds, qllavaphi3, 299792458, 0.2)?;

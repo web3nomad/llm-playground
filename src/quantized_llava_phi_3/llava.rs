@@ -1,20 +1,84 @@
 use super::{
-    clip::{ClipVisionTower, MMProjector},
+    clip::{ClipVisionConfig, ClipVisionTransformer},
+    config::{BOS_TOKEN_ID, CLIP_VISION_CONFIG, IMAGE_TOKEN_ID},
     image_processor::{HFPreProcessorConfig, ImageProcessor},
+    linear::QLinear,
     quantized_llama,
 };
-use candle_core::{quantized::gguf_file, Device, IndexOp, Tensor};
+use candle_core::{quantized::gguf_file, Device, IndexOp, Module, Tensor};
+use candle_nn::sequential::{seq, Sequential};
 use candle_transformers::quantized_var_builder;
 use tokenizers::Tokenizer;
 
-pub const BOS_TOKEN_ID: u32 = 1;
-pub const EOS_TOKEN_ID: u32 = 32007; // 模型实际输出的是 32007 <|end|>, 而不是 gguf 里配置的 32000 <|endoftext|>
-pub const IMAGE_TOKEN_ID: u32 = 32038; // see tokenizer.json, <image>
+struct MMProjector {
+    pub modules: Sequential,
+}
+
+impl MMProjector {
+    pub fn new(vb: quantized_var_builder::VarBuilder) -> candle_core::Result<Self> {
+        let text_hidden_size: usize = 3072;
+        let mm_hidden_size: usize = 1024;
+        let modules = {
+            let layer = QLinear::load(mm_hidden_size, text_hidden_size, vb.pp("0"))?;
+            let mut modules = seq().add(layer);
+            let mlp_depth = 2;
+            for i in 1..mlp_depth {
+                let layer = QLinear::load(
+                    text_hidden_size,
+                    text_hidden_size,
+                    vb.pp(format!("{}", i * 2)),
+                )?;
+                modules = modules.add(candle_nn::Activation::Gelu).add(layer);
+            }
+            modules
+        };
+        Ok(Self { modules })
+    }
+
+    pub fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        self.modules.forward(x)
+    }
+}
+
+struct ClipVisionTower {
+    model: ClipVisionTransformer,
+    #[allow(dead_code)]
+    pub config: ClipVisionConfig,
+}
+
+impl ClipVisionTower {
+    pub fn new(
+        vb: quantized_var_builder::VarBuilder,
+        clip_vision_config: &ClipVisionConfig,
+    ) -> candle_core::Result<Self> {
+        // let clip_vision_config = ClipVisionConfig::clip_vit_large_patch14_336();
+        let vision_model = ClipVisionTransformer::new(vb, &clip_vision_config)?;
+        Ok(Self {
+            model: vision_model,
+            config: clip_vision_config.clone(),
+        })
+    }
+
+    pub fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        let result = self.model.output_hidden_states(x)?;
+        // llava 模型都默认取的 clip 倒数第二层作为 image 特征
+        // 为了方便，模型文件里会把最后一层也加上，这样加载模型的代码不用改，
+        // gguf 里专门把它去掉了，所以直接取最后一层就行了
+        // let select_layer = -2;
+        // let index = result.len() as isize + select_layer;
+        // let result = result[index as usize].clone();
+        let result = result
+            .last()
+            .ok_or(candle_core::Error::Msg("No hidden states".to_string()))?
+            .clone();
+        Ok(result.i((.., 1..))?)
+    }
+}
 
 pub struct QLLaVAPhi3 {
     pub llama: quantized_llama::ModelWeights,
-    pub clip_vision_tower: ClipVisionTower,
-    pub mm_projector: MMProjector,
+    clip_vision_tower: ClipVisionTower,
+    mm_projector: MMProjector,
     pub tokenizer: Tokenizer,
 }
 
@@ -36,7 +100,7 @@ impl QLLaVAPhi3 {
         let (clip_vision_tower, mm_projector) = {
             let vb = quantized_var_builder::VarBuilder::from_gguf(mmproj_gguf_model_path, &device)?;
             let mm_projector = MMProjector::new(vb.pp("mm"))?;
-            let clip_vision_tower = ClipVisionTower::new(vb.pp("v"))?;
+            let clip_vision_tower = ClipVisionTower::new(vb.pp("v"), &CLIP_VISION_CONFIG)?;
             (clip_vision_tower, mm_projector)
         };
 
@@ -64,11 +128,9 @@ impl QLLaVAPhi3 {
     pub fn prepare_inputs_labels_for_multimodal(
         &self,
         device: &Device,
-        QLLaVAPhi3 { llama, .. }: &QLLaVAPhi3,
         input_ids: &Tensor,
         images: &[Tensor],
         _image_sizes: &[(u32, u32)],
-        image_token_id: i64,
     ) -> candle_core::Result<Tensor> {
         let concat_images = Tensor::cat(images, 0)?;
         let image_features_together = self.encode_images(&concat_images)?;
@@ -84,6 +146,7 @@ impl QLLaVAPhi3 {
             index_pos += *split_size;
         }
 
+        // mm_patch_merge_type is "flat"
         let image_features = image_features
             .iter()
             .map(|x| x.flatten(0, 1).unwrap())
@@ -97,7 +160,7 @@ impl QLLaVAPhi3 {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, x)| {
-                        if *x == image_token_id {
+                        if *x == IMAGE_TOKEN_ID as i64 {
                             Some(i as i64)
                         } else {
                             None
@@ -115,13 +178,19 @@ impl QLLaVAPhi3 {
 
         let input_ids_noim = input_ids_vec
             .iter()
-            .filter_map(|x| if *x != image_token_id { Some(*x) } else { None })
+            .filter_map(|x| {
+                if *x != IMAGE_TOKEN_ID as i64 {
+                    Some(*x)
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<i64>>();
         let input_ids_noim_len = input_ids_noim.len();
         image_indices.push((input_ids_noim_len) as i64);
         let input_ids_noim = Tensor::from_vec(input_ids_noim, input_ids_noim_len, &device)?;
         // println!("input_ids_noim: {:?}", input_ids_noim);
-        let cur_input_embeds = llama.embed(&input_ids_noim)?;
+        let cur_input_embeds = self.llama.embed(&input_ids_noim)?;
         // println!("cur_input_embeds: {:?}", cur_input_embeds);
         // can be replace by split if it is implemented in candle
         let input_embed_no_ims = {
@@ -158,73 +227,6 @@ impl QLLaVAPhi3 {
 
         Ok(new_input_embeds.unsqueeze(0)?)
     }
-
-    pub fn format_prompt(prompt: &str) -> String {
-        format!(
-            "<s><|system|>\n<|end|>\n<|user|>\n<image>\n{text_msg}<|end|>\n<|assistant|>\n",
-            text_msg = prompt,
-        )
-    }
-
-    pub fn load_image(
-        device: &Device,
-        image_file_path: &str,
-        preprocessor_config_file_path: &str,
-    ) -> anyhow::Result<((u32, u32), Tensor)> {
-        let preprocessor_config: HFPreProcessorConfig =
-            serde_json::from_slice(&std::fs::read(preprocessor_config_file_path)?)?;
-        let image_processor = ImageProcessor::from_hf_preprocessor_config(&preprocessor_config);
-
-        let img = image::ImageReader::open(image_file_path)?.decode()?;
-        let image_tensor = image_processor.preprocess(&img)?.unsqueeze(0)?;
-        // let image_tensor = image_tensor.to_dtype(DType::BF16)?.to_device(&device)?;
-        let image_tensor = image_tensor.to_device(&device)?;
-        // println!("Image size: {:?}", (img.width(), img.height()));
-        // println!("Image tensor: {:?}", image_tensor);
-        Ok(((img.width(), img.height()), image_tensor))
-    }
-
-    /// Input prompt: "A photo of <image> next to <image>"
-    /// Output: [bos_token_id, ...(tokens for "A photo of"), image_token_id, ...(tokens for " next to "), image_token_id]
-    pub fn tokenizer_image_token(
-        prompt: &str,
-        tokenizer: &Tokenizer,
-    ) -> candle_core::Result<Tensor> {
-        let prompt_chunks = prompt
-            .split("<image>")
-            .map(|s| {
-                tokenizer
-                    .encode(s, true)
-                    .unwrap()
-                    .get_ids()
-                    .to_vec()
-                    .iter()
-                    .map(|x| *x as i64)
-                    .collect()
-            })
-            .collect::<Vec<Vec<i64>>>();
-        let mut input_ids = Vec::new();
-        let mut offset = 0;
-        if !prompt_chunks.is_empty()
-            && !prompt_chunks[0].is_empty()
-            && prompt_chunks[0][0] == BOS_TOKEN_ID as i64
-        {
-            offset = 1;
-            input_ids.push(prompt_chunks[0][0]);
-        }
-
-        for x in insert_separator(
-            prompt_chunks,
-            duplicate_vec(&[IMAGE_TOKEN_ID as i64], offset + 1),
-        )
-        .iter()
-        {
-            input_ids.extend(x[1..].to_vec())
-        }
-        // println!("input_ids: {:?}", input_ids);
-        let input_len = input_ids.len();
-        Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu)
-    }
 }
 
 fn duplicate_vec<T>(vec: &[T], n: usize) -> Vec<T>
@@ -251,4 +253,68 @@ where
         .collect::<Vec<Vec<T>>>();
     res.pop();
     res
+}
+
+/// Loads and preprocesses an image for the model. Returns a tuple containing:
+/// - The original image dimensions (width, height)
+/// - A preprocessed tensor representation of the image
+pub fn load_image(
+    device: &Device,
+    image_file_path: &str,
+    preprocessor_config_file_path: &str,
+) -> anyhow::Result<((u32, u32), Tensor)> {
+    let preprocessor_config: HFPreProcessorConfig =
+        serde_json::from_slice(&std::fs::read(preprocessor_config_file_path)?)?;
+    let image_processor = ImageProcessor::from_hf_preprocessor_config(&preprocessor_config);
+    let img = image::ImageReader::open(image_file_path)?.decode()?;
+    let image_tensor = image_processor.preprocess(&img)?.unsqueeze(0)?;
+    // let image_tensor = image_tensor.to_dtype(DType::BF16)?.to_device(&device)?;
+    let image_tensor = image_tensor.to_device(&device)?;
+    Ok(((img.width(), img.height()), image_tensor))
+}
+
+/// Input prompt: "A photo of <image> next to <image>"
+/// Output: [bos_token_id, ...(tokens for "A photo of"), image_token_id, ...(tokens for " next to "), image_token_id]
+pub fn tokenizer_image_token(prompt: &str, tokenizer: &Tokenizer) -> candle_core::Result<Tensor> {
+    let prompt_chunks = prompt
+        .split("<image>")
+        .map(|s| {
+            tokenizer
+                .encode(s, true)
+                .unwrap()
+                .get_ids()
+                .to_vec()
+                .iter()
+                .map(|x| *x as i64)
+                .collect()
+        })
+        .collect::<Vec<Vec<i64>>>();
+    let mut input_ids = Vec::new();
+    let mut offset = 0;
+    if !prompt_chunks.is_empty()
+        && !prompt_chunks[0].is_empty()
+        && prompt_chunks[0][0] == BOS_TOKEN_ID as i64
+    {
+        offset = 1;
+        input_ids.push(prompt_chunks[0][0]);
+    }
+
+    for x in insert_separator(
+        prompt_chunks,
+        duplicate_vec(&[IMAGE_TOKEN_ID as i64], offset + 1),
+    )
+    .iter()
+    {
+        input_ids.extend(x[1..].to_vec())
+    }
+    // println!("input_ids: {:?}", input_ids);
+    let input_len = input_ids.len();
+    Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu)
+}
+
+pub fn format_prompt(prompt: &str) -> String {
+    format!(
+        "<s><|system|>\n<|end|>\n<|user|>\n<image>\n{text_msg}<|end|>\n<|assistant|>\n",
+        text_msg = prompt,
+    )
 }
