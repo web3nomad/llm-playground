@@ -5,7 +5,7 @@ use candle_transformers::generation::{LogitsProcessor, Sampling};
 use std::io::Write;
 
 /// The length of the sample to generate (in tokens).
-const SAMPLE_LEN: usize = 100;
+const SAMPLE_LEN: usize = 1000;
 const REPEAT_PENALTY: f32 = 1.1;
 const REPEAT_LAST_N: usize = 64;
 // from models/llava-phi-3/config.json
@@ -33,6 +33,7 @@ pub fn generate(
     };
     let mut logits_processor = LogitsProcessor::from_sampling(seed, sampling.clone());
     let mut index_pos = 0;
+    let mut all_tokens = vec![];
     for index in 0..SAMPLE_LEN.saturating_sub(1) {
         let (_, input_embeds_len, _) = input_embeds.dims3()?;
         // use kv cache, it is implemented in quantized llama
@@ -44,9 +45,22 @@ pub fn generate(
         let input = input_embeds.i((.., input_embeds_len.saturating_sub(context_size).., ..))?;
         let logits = llama.forward_input_embed(&input, context_index)?;
         let logits = logits.squeeze(0)?;
+
+        let logits = if REPEAT_PENALTY == 1. {
+            logits
+        } else {
+            let start_at = all_tokens.len().saturating_sub(REPEAT_LAST_N);
+            candle_transformers::utils::apply_repeat_penalty(
+                &logits,
+                REPEAT_PENALTY,
+                &all_tokens[start_at..],
+            )?
+        };
+
         let (_, input_len, _) = input.dims3()?;
         index_pos += input_len;
         let next_token = logits_processor.sample(&logits)?;
+        all_tokens.push(next_token);
         let next_token_tensor = Tensor::from_vec(vec![next_token], 1, &device)?;
         let next_embeds = llama.embed(&next_token_tensor)?.unsqueeze(0)?;
         input_embeds = Tensor::cat(&[input_embeds, next_embeds], 1)?;
@@ -76,7 +90,9 @@ pub async fn run() -> anyhow::Result<()> {
         "models/llava-phi-3/tokenizer.json",
     )?;
 
-    let prompt_str = QLLaVAPhi3::format_prompt(r#"Describe the image in less than 100 words."#);
+    let prompt_str = QLLaVAPhi3::format_prompt(
+        r#"You are an advanced image analysis AI. Examine the image and describe its contents in a concise, text-only format. Focus on identifying: People (including celebrities), actions, objects, animals or pets, nature elements, visual cues of sounds, human speech (if text bubbles present), displayed text (OCR), and brand logos. Provide specific examples for each category found in the image. Only mention categories that are present; omit any that are not detected. Use plain text format without lists or JSON. Be accurate and concise in your descriptions."#,
+    );
     println!("{}", &prompt_str);
 
     let (image_size, image_tensor) = QLLaVAPhi3::load_image(
@@ -97,7 +113,7 @@ pub async fn run() -> anyhow::Result<()> {
         IMAGE_TOKEN_ID as i64,
     )?;
 
-    generate(&device, input_embeds, qllavaphi3, 299792458, 0.0)?;
+    generate(&device, input_embeds, qllavaphi3, 299792458, 0.2)?;
 
     Ok(())
 }
