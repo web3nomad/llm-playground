@@ -12,6 +12,29 @@ use std::collections::HashMap;
 pub const MAX_SEQ_LEN: usize = 4096;
 
 #[derive(Debug, Clone)]
+pub struct LlamaTextConfig {
+    // 大部份配置都在下面定义的 from_gguf 里面读取并直接使用了，这里加一个配置是给外部使用的，比如 mm_projector
+    #[allow(dead_code)]
+    pub vocab_size: usize,
+    pub max_length: usize,
+    pub hidden_size: usize,
+    #[allow(dead_code)]
+    pub intermediate_size: usize,
+    #[allow(dead_code)]
+    pub num_hidden_layers: usize,
+    #[allow(dead_code)]
+    pub num_attention_heads: usize,
+    #[allow(dead_code)]
+    pub num_key_value_heads: usize,
+    #[allow(dead_code)]
+    pub rms_norm_eps: f64,
+    // pub max_position_embeddings: usize,
+    // pub model_type: String,
+    // pub rope_theta: f32,
+    // pub sliding_window: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
 struct Mlp {
     feed_forward_w1: QMatMul,
     feed_forward_w2: QMatMul,

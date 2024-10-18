@@ -1,23 +1,35 @@
 use super::{
     clip::{ClipVisionConfig, ClipVisionTransformer},
-    config::{BOS_TOKEN_ID, CLIP_VISION_CONFIG, IMAGE_TOKEN_ID},
+    config::LLAVA_PHI3_CONFIG,
     image_processor::{HFPreProcessorConfig, ImageProcessor},
     linear::QLinear,
-    quantized_llama,
+    quantized_llama::{self, LlamaTextConfig},
 };
 use candle_core::{quantized::gguf_file, Device, IndexOp, Module, Tensor};
 use candle_nn::sequential::{seq, Sequential};
 use candle_transformers::quantized_var_builder;
 use tokenizers::Tokenizer;
 
+#[derive(Debug, Clone)]
+pub struct LLaVAPhi3Config {
+    pub eos_token_id: u32,
+    pub bos_token_id: u32,
+    pub image_token_id: u32,
+    pub llama_text_config: LlamaTextConfig,
+    pub clip_vision_config: ClipVisionConfig,
+}
+
 struct MMProjector {
     pub modules: Sequential,
 }
 
 impl MMProjector {
-    pub fn new(vb: quantized_var_builder::VarBuilder) -> candle_core::Result<Self> {
-        let text_hidden_size: usize = 3072;
-        let mm_hidden_size: usize = 1024;
+    pub fn new(
+        vb: quantized_var_builder::VarBuilder,
+        config: &LLaVAPhi3Config,
+    ) -> candle_core::Result<Self> {
+        let text_hidden_size: usize = config.llama_text_config.hidden_size; // 3072
+        let mm_hidden_size: usize = config.clip_vision_config.hidden_size; // 1024
         let modules = {
             let layer = QLinear::load(mm_hidden_size, text_hidden_size, vb.pp("0"))?;
             let mut modules = seq().add(layer);
@@ -80,6 +92,7 @@ pub struct QLLaVAPhi3 {
     clip_vision_tower: ClipVisionTower,
     mm_projector: MMProjector,
     pub tokenizer: Tokenizer,
+    pub config: LLaVAPhi3Config,
 }
 
 impl QLLaVAPhi3 {
@@ -89,6 +102,7 @@ impl QLLaVAPhi3 {
         mmproj_gguf_model_path: &str,
         tokenizer_path: &str,
     ) -> anyhow::Result<Self> {
+        let config = LLAVA_PHI3_CONFIG.clone();
         let llama = {
             let model_path = std::path::PathBuf::from(gguf_model_path);
             let mut file = std::fs::File::open(&model_path)?;
@@ -99,8 +113,8 @@ impl QLLaVAPhi3 {
 
         let (clip_vision_tower, mm_projector) = {
             let vb = quantized_var_builder::VarBuilder::from_gguf(mmproj_gguf_model_path, &device)?;
-            let mm_projector = MMProjector::new(vb.pp("mm"))?;
-            let clip_vision_tower = ClipVisionTower::new(vb.pp("v"), &CLIP_VISION_CONFIG)?;
+            let mm_projector = MMProjector::new(vb.pp("mm"), &config)?;
+            let clip_vision_tower = ClipVisionTower::new(vb.pp("v"), &config.clip_vision_config)?;
             (clip_vision_tower, mm_projector)
         };
 
@@ -110,6 +124,7 @@ impl QLLaVAPhi3 {
             clip_vision_tower,
             mm_projector,
             tokenizer,
+            config,
         })
     }
 
@@ -160,7 +175,7 @@ impl QLLaVAPhi3 {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, x)| {
-                        if *x == IMAGE_TOKEN_ID as i64 {
+                        if *x == self.config.image_token_id as i64 {
                             Some(i as i64)
                         } else {
                             None
@@ -179,7 +194,7 @@ impl QLLaVAPhi3 {
         let input_ids_noim = input_ids_vec
             .iter()
             .filter_map(|x| {
-                if *x != IMAGE_TOKEN_ID as i64 {
+                if *x != self.config.image_token_id as i64 {
                     Some(*x)
                 } else {
                     None
@@ -212,7 +227,7 @@ impl QLLaVAPhi3 {
         let new_input_embeds = Tensor::cat(&cur_new_input_embeds, 0)?;
 
         // trancate
-        let tokenizer_model_max_length = Some(4096); // in models/llava-phi-3/tokenizer_config.json
+        let tokenizer_model_max_length = Some(self.config.llama_text_config.max_length);
         let new_input_embeds = if let Some(tokenizer_model_max_length) = tokenizer_model_max_length
         {
             let (new_input_embeds_length, _) = new_input_embeds.shape().dims2()?;
@@ -226,6 +241,45 @@ impl QLLaVAPhi3 {
         };
 
         Ok(new_input_embeds.unsqueeze(0)?)
+    }
+
+    /// Input prompt: "A photo of <image> next to <image>"
+    /// Output: [bos_token_id, ...(tokens for "A photo of"), image_token_id, ...(tokens for " next to "), image_token_id]
+    pub fn tokenizer_image_token(&self, prompt: &str) -> candle_core::Result<Tensor> {
+        let prompt_chunks = prompt
+            .split("<image>")
+            .map(|s| {
+                self.tokenizer
+                    .encode(s, true)
+                    .unwrap()
+                    .get_ids()
+                    .to_vec()
+                    .iter()
+                    .map(|x| *x as i64)
+                    .collect()
+            })
+            .collect::<Vec<Vec<i64>>>();
+        let mut input_ids = Vec::new();
+        let mut offset = 0;
+        if !prompt_chunks.is_empty()
+            && !prompt_chunks[0].is_empty()
+            && prompt_chunks[0][0] == self.config.bos_token_id as i64
+        {
+            offset = 1;
+            input_ids.push(prompt_chunks[0][0]);
+        }
+
+        for x in insert_separator(
+            prompt_chunks,
+            duplicate_vec(&[self.config.image_token_id as i64], offset + 1),
+        )
+        .iter()
+        {
+            input_ids.extend(x[1..].to_vec())
+        }
+        // println!("input_ids: {:?}", input_ids);
+        let input_len = input_ids.len();
+        Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu)
     }
 }
 
@@ -271,45 +325,6 @@ pub fn load_image(
     // let image_tensor = image_tensor.to_dtype(DType::BF16)?.to_device(&device)?;
     let image_tensor = image_tensor.to_device(&device)?;
     Ok(((img.width(), img.height()), image_tensor))
-}
-
-/// Input prompt: "A photo of <image> next to <image>"
-/// Output: [bos_token_id, ...(tokens for "A photo of"), image_token_id, ...(tokens for " next to "), image_token_id]
-pub fn tokenizer_image_token(prompt: &str, tokenizer: &Tokenizer) -> candle_core::Result<Tensor> {
-    let prompt_chunks = prompt
-        .split("<image>")
-        .map(|s| {
-            tokenizer
-                .encode(s, true)
-                .unwrap()
-                .get_ids()
-                .to_vec()
-                .iter()
-                .map(|x| *x as i64)
-                .collect()
-        })
-        .collect::<Vec<Vec<i64>>>();
-    let mut input_ids = Vec::new();
-    let mut offset = 0;
-    if !prompt_chunks.is_empty()
-        && !prompt_chunks[0].is_empty()
-        && prompt_chunks[0][0] == BOS_TOKEN_ID as i64
-    {
-        offset = 1;
-        input_ids.push(prompt_chunks[0][0]);
-    }
-
-    for x in insert_separator(
-        prompt_chunks,
-        duplicate_vec(&[IMAGE_TOKEN_ID as i64], offset + 1),
-    )
-    .iter()
-    {
-        input_ids.extend(x[1..].to_vec())
-    }
-    // println!("input_ids: {:?}", input_ids);
-    let input_len = input_ids.len();
-    Tensor::from_vec(input_ids, (1, input_len), &Device::Cpu)
 }
 
 pub fn format_prompt(prompt: &str) -> String {

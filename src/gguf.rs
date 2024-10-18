@@ -1,4 +1,4 @@
-use super::quantized_llava_phi_3::{self, QLLaVAPhi3, EOS_TOKEN_ID};
+use super::quantized_llava_phi_3::{self, QLLaVAPhi3};
 use candle_core::{Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -8,9 +8,6 @@ use std::io::Write;
 const SAMPLE_LEN: usize = 1000;
 const REPEAT_PENALTY: f32 = 1.1;
 const REPEAT_LAST_N: usize = 64;
-// from models/llava-phi-3/config.json
-// let vocab_size: usize = 32064;
-// let hidden_size: usize = 3072;
 
 pub fn generate(
     device: &Device,
@@ -18,6 +15,7 @@ pub fn generate(
     QLLaVAPhi3 {
         mut llama,
         tokenizer,
+        config,
         ..
     }: QLLaVAPhi3,
     seed: u64,
@@ -64,7 +62,7 @@ pub fn generate(
         let next_token_tensor = Tensor::from_vec(vec![next_token], 1, &device)?;
         let next_embeds = llama.embed(&next_token_tensor)?.unsqueeze(0)?;
         input_embeds = Tensor::cat(&[input_embeds, next_embeds], 1)?;
-        if next_token == EOS_TOKEN_ID {
+        if next_token == config.eos_token_id {
             break;
         }
         if let Some(t) = tos.next_token(next_token)? {
@@ -102,8 +100,7 @@ pub async fn run() -> anyhow::Result<()> {
         "models/llava-phi-3/preprocessor_config.json",
     )?;
 
-    let tokens =
-        quantized_llava_phi_3::tokenizer_image_token(prompt_str.as_str(), &qllavaphi3.tokenizer)?;
+    let tokens = qllavaphi3.tokenizer_image_token(prompt_str.as_str())?;
 
     let input_embeds = qllavaphi3.prepare_inputs_labels_for_multimodal(
         &device,
