@@ -1,7 +1,4 @@
-use super::quantized_llava_phi_3::{
-    load_clip, load_image_to_tensor, prepare_inputs_labels_for_multimodal, tokenizer_image_token,
-    QLLaVAPhi3,
-};
+use super::quantized_llava_phi_3::{QLLaVAPhi3, EOS_TOKEN_ID, IMAGE_TOKEN_ID};
 use candle_core::{Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -15,14 +12,13 @@ const REPEAT_LAST_N: usize = 64;
 // let vocab_size: usize = 32064;
 // let hidden_size: usize = 3072;
 
-const EOS_TOKEN_ID: u32 = 32007; // 模型实际输出的是 32007 <|end|>, 而不是 gguf 里配置的 32000 <|endoftext|>
-
 pub fn generate(
     device: &Device,
     mut input_embeds: Tensor,
     QLLaVAPhi3 {
         mut llama,
         tokenizer,
+        ..
     }: QLLaVAPhi3,
     seed: u64,
     temperature: f64,
@@ -73,47 +69,35 @@ pub fn generate(
 
 pub async fn run() -> anyhow::Result<()> {
     let device = Device::new_metal(0)?;
-    let qllama = QLLaVAPhi3::load(
+    let qllavaphi3 = QLLaVAPhi3::load(
         &device,
         "models/llava-phi-3/llava-phi-3-mini-int4.gguf",
+        "models/llava-phi-3/llava-phi-3-mini-mmproj-f16.gguf",
         "models/llava-phi-3/tokenizer.json",
     )?;
-    let prompt_str = QLLaVAPhi3::format_prompt(r#"Describe the image in less than 50 words."#);
+
+    let prompt_str = QLLaVAPhi3::format_prompt(r#"Describe the image in less than 100 words."#);
     println!("{}", &prompt_str);
 
-    let (image_size, image_tensor) = load_image_to_tensor(
+    let (image_size, image_tensor) = QLLaVAPhi3::load_image(
         &device,
         "models/20240923-173209.jpeg",
         // "models/frames/4000.jpg",
         "models/llava-phi-3/preprocessor_config.json",
     )?;
 
-    let (clip_vision_model, mm_projector) = load_clip(
-        &device,
-        "models/llava-phi-3/llava-phi-3-mini-mmproj-f16.gguf",
-    )?;
+    let tokens = QLLaVAPhi3::tokenizer_image_token(prompt_str.as_str(), &qllavaphi3.tokenizer)?;
 
-    let image_token_id: i64 = 32038; // see tokenizer.json
-    let bos_token_id: i64 = 1;
-    let tokens = tokenizer_image_token(
-        prompt_str.as_str(),
-        &qllama.tokenizer,
-        image_token_id,
-        bos_token_id,
-    )?;
-
-    let input_embeds = prepare_inputs_labels_for_multimodal(
+    let input_embeds = qllavaphi3.prepare_inputs_labels_for_multimodal(
         &device,
-        &qllama,
+        &qllavaphi3,
         &tokens,
         &[image_tensor],
         &[image_size],
-        image_token_id,
-        &clip_vision_model,
-        &mm_projector,
+        IMAGE_TOKEN_ID as i64,
     )?;
 
-    generate(&device, input_embeds, qllama, 299792458, 0.0)?;
+    generate(&device, input_embeds, qllavaphi3, 299792458, 0.0)?;
 
     Ok(())
 }
