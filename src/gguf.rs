@@ -4,20 +4,37 @@ use super::qllava::{
 };
 use candle_core::{Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
-use candle_transformers::generation::LogitsProcessor;
+use candle_transformers::generation::{LogitsProcessor, Sampling};
 use std::io::Write;
+
+/// The length of the sample to generate (in tokens).
+const SAMPLE_LEN: usize = 100;
+const REPEAT_PENALTY: f32 = 1.1;
+const REPEAT_LAST_N: usize = 64;
+// from models/llava-phi-3/config.json
+// let vocab_size: usize = 32064;
+// let hidden_size: usize = 3072;
+
+const EOS_TOKEN_ID: u32 = 32007; // 模型实际输出的是 32007 <|end|>, 而不是 gguf 里配置的 32000 <|endoftext|>
 
 pub fn generate(
     device: &Device,
     mut input_embeds: Tensor,
     mut qllama: QLlama,
+    seed: u64,
+    temperature: f64,
 ) -> anyhow::Result<()> {
     let mut tos = TokenOutputStream::new(qllama.tokenizer.clone());
-    let to_sample = qllama.sample_len.saturating_sub(1);
-
-    let mut logits_processor = LogitsProcessor::from_sampling(qllama.seed, qllama.sampling.clone());
+    let sampling = {
+        if temperature <= 0. {
+            Sampling::ArgMax
+        } else {
+            Sampling::All { temperature }
+        }
+    };
+    let mut logits_processor = LogitsProcessor::from_sampling(seed, sampling.clone());
     let mut index_pos = 0;
-    for index in 0..to_sample {
+    for index in 0..SAMPLE_LEN.saturating_sub(1) {
         let (_, input_embeds_len, _) = input_embeds.dims3()?;
         // use kv cache, it is implemented in quantized llama
         let (context_size, context_index) = if index > 0 {
@@ -34,7 +51,7 @@ pub fn generate(
         let next_token_tensor = Tensor::from_vec(vec![next_token], 1, &device)?;
         let next_embeds = qllama.model.embed(&next_token_tensor)?.unsqueeze(0)?;
         input_embeds = Tensor::cat(&[input_embeds, next_embeds], 1)?;
-        if next_token == qllama.eos_token_id {
+        if next_token == EOS_TOKEN_ID {
             break;
         }
         if let Some(t) = tos.next_token(next_token)? {
@@ -93,7 +110,7 @@ pub async fn run() -> anyhow::Result<()> {
         &mm_projector,
     )?;
 
-    generate(&device, input_embeds, qllama)?;
+    generate(&device, input_embeds, qllama, 299792458, 0.0)?;
 
     Ok(())
 }
