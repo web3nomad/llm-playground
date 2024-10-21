@@ -8,6 +8,7 @@ use super::{
 use candle_core::{quantized::gguf_file, Device, IndexOp, Module, Tensor};
 use candle_nn::sequential::{seq, Sequential};
 use candle_transformers::quantized_var_builder;
+use std::path::Path;
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Clone)]
@@ -98,16 +99,15 @@ pub struct QLLaVAPhi3 {
 impl QLLaVAPhi3 {
     pub fn load(
         device: &Device,
-        gguf_model_path: &str,
-        mmproj_gguf_model_path: &str,
-        tokenizer_path: &str,
+        gguf_model_path: impl AsRef<Path>,
+        mmproj_gguf_model_path: impl AsRef<Path>,
+        tokenizer_path: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
         let config = LLAVA_PHI3_CONFIG.clone();
         let llama = {
-            let model_path = std::path::PathBuf::from(gguf_model_path);
-            let mut file = std::fs::File::open(&model_path)?;
+            let mut file = std::fs::File::open(&gguf_model_path)?;
             let gguf_content =
-                gguf_file::Content::read(&mut file).map_err(|e| e.with_path(model_path))?;
+                gguf_file::Content::read(&mut file).map_err(|e| e.with_path(gguf_model_path))?;
             quantized_llama::ModelWeights::from_gguf(gguf_content, &mut file, &device)?
         };
 
@@ -314,8 +314,8 @@ where
 /// - A preprocessed tensor representation of the image
 pub fn load_image(
     device: &Device,
-    image_file_path: &str,
-    preprocessor_config_file_path: &str,
+    image_file_path: impl AsRef<Path>,
+    preprocessor_config_file_path: impl AsRef<Path>,
 ) -> anyhow::Result<((u32, u32), Tensor)> {
     let preprocessor_config: HFPreProcessorConfig =
         serde_json::from_slice(&std::fs::read(preprocessor_config_file_path)?)?;

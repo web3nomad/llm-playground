@@ -80,6 +80,8 @@ pub fn generate(
 }
 
 pub async fn run() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().init(); // set up default subscriber with log level `INFO`
+
     let device = Device::new_metal(0)?;
     let qllavaphi3 = QLLaVAPhi3::load(
         &device,
